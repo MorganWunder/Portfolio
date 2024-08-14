@@ -1,0 +1,167 @@
+/**************************************************************************************************
+Call Productivity AC Rollup:
+Assigns each IC a degree_offering to account for ACs moving programs, roles, etc. 
+Will assign the degree where there was the most amount of calls in a given month.  
+**************************************************************************************************/
+
+
+with university_timezones as (
+
+SELECT distinct degree_offering, --updated this 4/18 to pull degree offering rather than domain - pmx migrations will cause dupes by going off of domain
+timezone as university_timezone
+from analysts_playground.university_timezones
+),
+
+ADM_IC as (
+SELECT DISTINCT sf_user_name, u.name, u.tenant_code,profile_name, role_name,is_active, u.timezone_id, u.user_id
+
+FROM degrees_monster.call_activity ca
+LEFT JOIN degrees_salesforce.users u ON u.user_id=ca.user_id
+LEFT JOIN degrees_monster.composite_leads cl ON cl.lead_id=ca.lead_id
+
+WHERE (/*LOWER(u.role_name) LIKE '%admissions%' OR LOWER(profile_name) LIKE '%admissions%' or LOWER(ring_groups) like '%admission%' OR */call_start_time::DATE<=COALESCE(cl.enrolled_date,cl.last_app_access_date::DATE))
+),
+
+call_activity_table as (
+select
+-- this just pulls in the salesforce the call record is from, it pulls the salesforce of the AC. however in cases when no one picks up the call it pulls from the salesforce of the call record itself
+	coalesce(ic.tenant_code,ca.tenant_code) as domain, 
+	ca.lead_id,
+	ic.user_id,
+	talkdesk_activity_id as call_id,
+	contact_id,
+	call_start_time,
+	call_end_time,
+	talk_time_sec as talk_time,
+	call_disposition,
+	call_type,
+	result as call_result,
+	notes,
+	ic.sf_user_name,
+-- this is the name of the AC (agent) who answered the call, in cases when it is a call to the admissions queue that no one answered it uses the name of the queue
+-- 		this will need to be adjusted within tableau based on domain and queue name to properly assign queues to admissions team
+	coalesce(ic.name,ring_groups) as name,
+	ic.is_active,
+	ring_groups,
+	speed_to_answer_sec,
+	wait_time_sec,
+	talkdesk_phone_number,
+	degree_offering,
+	ca.createddate,
+	hours_from_created,
+	call_number,
+	talkdesk_recording_url,
+-- adding in a role name for the admissions queue
+	case when ic.role_name is not null then ic.role_name else 'admissions queue' end as role_name,
+	ic.profile_name,
+	ic.timezone_id
+FROM degrees_monster.call_activity ca
+	LEFT JOIN ADM_IC ic ON ic.user_id=ca.user_id
+WHERE DATE_TRUNC('day',call_start_time) >= current_date - '730 days'::INTERVAL 
+                AND DATE_TRUNC('day',call_start_time) < current_date
+
+),
+
+domain_assignment_table_30 --UPDATED TO GROUP UP TO MAX PROGRAM IN A GIVEN MONTH
+as (
+		select *, max(case when offering_rank = 1 then degree_offering end) over (partition by name, call_30) as max_degree_offering_30, 
+				  max(case when offering_rank = 1 then role_name end) over (partition by name, call_30) as max_role_name_30,
+				  max(case when offering_rank = 1 then user_id end) over (partition by name, call_30) as max_sf_user_id_30,
+				  max(case when offering_rank = 1 then domain end) over (partition by name, call_30) as max_domain_30 --for QA purposes
+		from (
+				select *, row_number() over (partition by name, call_30 order by calls_per_user_offering desc) as offering_rank,
+						  row_number() over (partition by user_id, call_30 order by calls_per_user_offering desc) as user_id_rank --use this to eliminate dupes per SF ID
+				from   (
+							select
+								coalesce(u.domain,ca.tenant_code) as domain, 
+								degree_offering,
+								user_id,
+								sf_user_name,
+								date_trunc('month', call_start_time) as call_30,
+								coalesce(u.name,ring_groups) as name,
+								case when role_name is not null then role_name else 'admissions queue' end as role_name,
+								count(*) as calls_per_user_offering
+							FROM degrees_monster.call_activity ca
+								LEFT JOIN monster.users u on u.id = ca.user_id
+							WHERE /*(LOWER(profile_name) LIKE '%admissions%' OR LOWER(u.role_name) LIKE '%admissions%' OR 
+									LOWER(ring_groups) like '%admission%')  
+									and */ (DATE_TRUNC('day',call_start_time) >= current_date - '730 days'::INTERVAL --keep same interval as above
+							                AND DATE_TRUNC('day',call_start_time) < current_date)
+							        and user_id is not null
+							group by 1,2,3,4,5,6,7
+						) a
+			 ) b
+		where user_id_rank = 1			
+)
+
+--comments generally refer to the code immediately below the comment
+select
+--assigning one domain per user based on the domain that user spends the most time in
+	dat.max_domain_30 as domain_30,
+	max_degree_offering_30,
+	university_timezone,
+-- call_date is the date the call was made, it is adjusted to the timezone of the AC based on their salesforce profile, in cases when no one picks up the phone it adjusts to ET
+-- 		this is meant to adjust the default UTC time within the data tables that may assign calls made later on to the next day since UTC is 4-5 hours ahead of ET, and even more ahead of MT or PT
+	coalesce(DATE_TRUNC('day',timezone(timezone_id,call_start_time at time zone 'GMT'))::DATE,
+			DATE_TRUNC('day',timezone(university_timezone,call_start_time at time zone 'GMT'))::DATE 
+			)as call_date,
+-- this is salesforce ID of the AC (agent) who answered the call
+	max_sf_user_id_30 as sf_user_id_30,
+	ca.name,
+	dir.director,
+--assigning the role name associated with the max_domain
+	max_role_name_30 as role_name_30,
+	ca.profile_name,
+	ca.is_active,
+	sun.service_end_date as sunset_date,
+-- main metrics
+	sum(case when call_type in ('outbound','outbound_missed','inbound') then 1 else 0 end) as call_volume, --this is essentially "Dials"
+	sum(ca.talk_time) as talk_time,
+-- call volume by type
+-- outbound calls
+	sum(case when call_type in ('outbound','outbound_missed') then 1 else 0 end) as total_outbound_calls,
+	SUM(case when call_type in ('outbound','outbound_missed') and lower(ring_groups) like '%admissions queue%' then 1 else 0 end) as total_outbound_queue_calls,
+-- inbound calls
+	sum(case when call_type in ('inbound','missed','voicemail') then 1 else 0 end) as total_inbound_calls, -- any call records that was inbound in nature
+-- inbound calls that were not answered
+	sum(case when call_type in ('missed','voicemail') then 1 else 0 end) as total_missed_inbound_calls,
+-- additional call info
+	sum(case when call_type = 'inbound' then 1 else 0 end) as inbound_answers,
+	sum(case when call_type = 'missed' then 1 else 0 end) as missed_calls,
+	sum(case when call_type = 'voicemail' then 1 else 0 end) as voicemail_calls,
+	sum(CASE WHEN call_type LIKE '%abandoned' THEN 1 ELSE 0 END) AS abandoned_calls,
+	sum(case when call_type = 'outbound' AND ca.talk_time >= 120 then 1 else 0 end) as successful_outbound_calls,
+	sum(case when call_type = 'inbound' and ca.talk_time >= 120 then 1 else 0 end) as successful_inbound_calls,
+-- remove dulipcate calls
+--inbound calls in uni and ac office hours
+	sum(case when call_type in ('inbound','missed','voicemail') 
+					and date_trunc('minute',timezone(university_timezone ,call_start_time at time zone 'GMT'))::TIME >= '09:00:00'
+						and date_trunc('minute',timezone(university_timezone,call_start_time at time zone 'GMT'))::TIME <= '17:30:00'
+		then 1 else 0 
+		end) total_inbound_calls_during_uni_office_hours_only,
+	sum(case when call_type in ('inbound') 
+					and date_trunc('minute',timezone(timezone_id,call_start_time at time zone 'GMT'))::TIME >= '09:00:00'
+						and date_trunc('minute',timezone(timezone_id,call_start_time at time zone 'GMT'))::TIME <= '17:30:00'
+		then 1 else 0 
+		end) total_inbound_calls_during_ac_office_hours_only_answered,
+	sum(case when call_type in ('inbound') 
+					and date_trunc('minute',timezone(university_timezone ,call_start_time at time zone 'GMT'))::TIME >= '09:00:00'
+						and date_trunc('minute',timezone(university_timezone,call_start_time at time zone 'GMT'))::TIME <= '17:30:00'
+		then 1 else 0 
+		end) 	total_inbound_calls_during_uni_office_hours_only_answered
+
+/*
+ * missed inbound call criteria
+ * -- talkdesk__wait_time__c >= 30 seconds (meaning they waited on the line for at least 30 seconds)
+ * -- and call_type in ('missed','voicemail','abandoned)
+ * 		-- missed means no one picked up and no message left
+ * 		-- voicemail means no one picked up and they left a message
+ * -- AND call_start_time >= 9am (ET,MT,PT,GMT) and call_start_time <= 4pm (16) (ET,MT,PT,GMT)
+ */ 
+from call_activity_table ca
+	left join domain_assignment_table_30 dat on ca.user_id = dat.user_id and date_trunc('month',ca.call_start_time) = dat.call_30
+	left join university_timezones utz on utz.degree_offering = dat.max_degree_offering_30
+	left join analysts_playground.director_degree_offerings dir on dir.degree_offering=max_degree_offering_30
+	left join analysts_playground.sunset_programs sun on sun.degree_offering = max_degree_offering_30
+	
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11
