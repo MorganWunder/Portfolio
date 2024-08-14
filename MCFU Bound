@@ -1,0 +1,18 @@
+-- A sub query that was then implemented with data science to create a new schema. 
+
+select ca.tenant_code,
+					ca.lead_id,
+					combined_mc_date,
+					min(ca.call_start_time) as first_call_post_mc
+			from degrees_monster.call_activity ca
+			left join (
+			    	select degree_offering  as degree_offering
+			         , lead_id as lead_id
+			         , coalesce(contact_type_datetime, app_contact_type_datetime ) as combined_mc_date
+			    	from degrees_monster.composite_leads
+			    	where (contact_type = 'Meaningful Conversation' or app_contact_type = 'Meaningful Conversation') 
+			            
+			    ) c on ca.lead_id = c.lead_id 
+			WHERE ca.call_start_time::date > combined_mc_date::date
+			AND date_part('year',combined_mc_date)>=date_part('year',current_date)-2
+			group by 1,2,3
