@@ -1,0 +1,18 @@
+/* Query to help a manager figure out the time between when the last call was made to an applicant */ 
+
+with call_rank as (
+SELECT account_id, call_start_time,row_number() over (partition by account_id order by call_start_time asc) as call_num
+
+FROM degrees_monster.call_activity
+)
+
+SELECT s.account_id,cadence,call_start_time,call_num,u.name as student_owner, LAG(call_start_time,1)OVER(partition BY s.account_id ORDER BY call_num) as previous_call
+
+FROM call_rank ca
+LEFT JOIN degrees_monster.composite_students s ON  s.account_id=ca.account_id
+LEFT JOIN degrees_salesforce.users u ON u.user_id=s.student_owner
+
+WHERE s.degree_offering LIKE 'name%'
+AND s.student_type='LOA'
+and call_start_time>registered_date
+GROUP BY 1,2,3,4,5
