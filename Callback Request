@@ -1,0 +1,45 @@
+/* Query to showcase a callback pilot project. A new feature was added to some programs where when an applicant called in and no one was available to answer, they could request a callback. 
+The query below was used to showcase 1) If callback requests wre being captured, 2)If admissions counselors were calling people back after they requested a call back. */
+
+-- First query is to pull out a table of those that requested a callback, was there a call made after the request. 
+with callbackcomplete as (
+SELECT
+name_id,
+MIN(call_start_time) as calledback_date
+
+FROM (SELECT * FROM degrees_salesforce.tasks WHERE subject LIKE '%Callback%') as t
+LEFT JOIN degrees_salesforce.talkdesk_activities ca ON ca.name_id=t.who_id 
+
+WHERE ca.tenant_code IN ('XXX') --remove school name
+AND ca.type LIKE 'Outbound%'
+AND call_start_time>t.createddate
+GROUP BY 1
+)
+
+-- Overall query to get more AC data to pull into visualizations. 
+SELECT talkdesk_id as initialcall_id,
+ca.name_id,
+t.who_id,
+ca.tenant_code,
+ca.ownerid,
+ca.call_start_time,
+t.createddate as task_date,
+u.name as IC,
+timezone('America/New_York',t.createddate at time zone 'GMT') as task_date_EST,
+subject,
+calledback_date,
+ca.type,
+COUNT(talkdesk_activity_id) as Totalinboundcount,
+CASE WHEN t.subject LIKE '%Callback%' THEN 1 ELSE 0 END as CBRequested,
+CASE WHEN calledback_date IS NOT NULL THEN 1 ELSE 0 END as calledback
+
+FROM (SELECT * FROM degrees_salesforce.talkdesk_activities WHERE type NOT LIKE 'Outbound%') ca
+LEFT JOIN degrees_salesforce.tasks t ON ca.talkdesk_id=t.telephony_call_record_id
+LEFT JOIN callbackcomplete cbc ON cbc.name_id=ca.name_id AND calledback_date>t.createddate
+LEFT JOIN degrees_salesforce.users u ON u.user_id=t.owner_id
+
+WHERE ca.tenant_code IN ('ucb-mids','ucd-umt','pep-umt','cu-umt','hu-umt')
+AND call_start_time>'2023-11-01 00:00:00'
+
+
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12
