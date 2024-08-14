@@ -1,0 +1,355 @@
+WITH completer_info as (
+	select
+		cb.id as application_id,
+		cb.completer as completer_name,
+		--cb.completer_id,
+		u.email as completer_email
+	from app_success.completed_by cb
+		left join degrees_salesforce.users u on u.user_id = cb.completer_id 
+		where completer_id is not null
+	group by 1,2,3
+),
+users as (
+select user_id as id,name,email from degrees_salesforce.users 
+),
+application_info as (
+/*
+THIS WILL BE THE BASE TABLE
+This query pulls from the monster.composite table
+It selects basic application information such as funnel dates, cohort information, application id, and bottoms up
+MATCH this table to deadlines on ai.degree_offering = d.degree_offering AND ai.app_cohort = d.term_month_year__c
+MATCH this table to app_items on ai.opportunity_id (or account_id for usc-mat and usc-msw)
+MATCH this table to ERS_status_dates on ers.opportunityid = ai.opportunity_id (or accountid for usc-mat and usc-msw)
+*/
+SELECT 
+	app_success_vertical as vertical,
+	CASE 
+		WHEN c.degree_offering = 'usc-mat' THEN
+			CASE WHEN app_degree LIKE 'EdD%' THEN 'usc-edd' ELSE 'usc-mat' end
+		when c.degree_offering = 'gwu-mph' then
+			case when app_degree = 'Healthinformatics' then 'gwu-mhi' else 'gwu-mph' end 
+		when c.degree_offering = 'sc-msw' then 
+			case when app_degree = 'Doctorate of Social Work' then 'sc-dsw' else 'sc-msw' end 
+	 WHEN c.degree_offering = 'nu-mac' THEN 
+			CASE WHEN app_degree = 'Master of Science in Marriage and Family Therapy' THEN 'nu-mft' ELSE 'nu-mac' end
+		ELSE c.degree_offering
+	END as degree_offering,
+	CASE 
+		WHEN c.degree_offering IN ('usc-msw','usc-mat') THEN c.account_id
+		ELSE opportunity_id
+	END as app_id,
+    c.tenant_code as domain,
+	c.account_id,
+    current_cohort,
+	app_cohort,
+	app_degree,
+program_track,
+    application_status,
+	application_started_date,
+	application_submitted_date,
+	application_completed_date, 
+	c.ers_application_status,
+            ers_complete_date,
+	submit_bottoms_up,
+	complete_bottoms_up,
+    application_advisor_comments,
+	will_not_complete_reason,
+	app_temperature,
+    total_application_items_count,
+    total_application_items_received,
+    hold_completing,
+    application_coordinator,
+    u.name as application_coordinator_name,
+    u.email as application_coordinator_email,
+    n.name as "Applicant Full Name",
+    c.app_owner as app_owner_id,
+    u2.name as "Admissions Counselor"
+FROM degrees_monster.composite_leads c
+    left join users u on u.id = c.application_coordinator
+    left join users u2 on u2.id = c.app_owner
+    left join (select account_id, name from degrees_monster_pii.account_names) n on n.account_id = c.account_id
+    left join (select distinct degree_offering,app_success_vertical from portland.ontario where app_success_vertical is not null) o on o.degree_offering = c.degree_offering
+WHERE (RIGHT(current_cohort,4) IN (DATE_PART('year',current_date)::TEXT, (DATE_PART('year',current_date)-1)::TEXT, (DATE_PART('year',current_date)-2)::TEXT, (DATE_PART('year',current_date)+1)::TEXT) --past year, current year, next year
+        OR (DATE_PART('year',application_completed_date) >= DATE_part('year',current_date) - 2)
+        or (date_part('year',application_submitted_date) >= date_part('year',current_date) - 2))
+	AND (application_started_date IS NOT NULL)
+),
+
+ers_status_history as (
+--Replaced Union of all programs' staging tables with the combined opp field history table. As of 3/20/24 PMX is not inlcuded but working to include. 
+SELECT DISTINCT COALESCE(cl.opportunity_id, o.opportunity_id) as app_id, createddate, old_value as oldvalue, new_value as newvalue
+FROM degrees_salesforce.opportunityfieldhistory o
+LEFT JOIN degrees_monster.composite_leads cl ON cl.program_org_opportunity_id=o.opportunity_id 
+WHERE field = 'ERS_Application_Status__c'
+
+),
+ers_status_history_and_vertical as (
+SELECT
+	ers.*,
+	degree_offering,
+	vertical
+FROM ers_status_history ers
+	LEFT JOIN (SELECT app_id,degree_offering,vertical FROM application_info) ai on ai.app_id = ers.app_id
+
+
+),
+arrtc as (
+--ALL RECEIVED TO READY TO COMPLETE SLA and Number of times
+SELECT 
+	app_id,
+	--all_received_date,
+	-- this totals the times that it was changed from all received to ready to complete
+	SUM(CASE WHEN all_received_date IS NOT NULL THEN 1 ELSE 0 END) as RTC_attempts,
+	--this totals the times that these changes happened within the defined SLA of 4 days
+	SUM(CASE 
+			WHEN all_received_date IS NOT NULL
+				AND (createddate::DATE - all_received_date::DATE <= 4) THEN 1 ELSE 0
+		END) as arrtc_in_dept_sla,
+	SUM(CASE 
+			WHEN all_received_date IS NOT NULL THEN
+				CASE 
+					WHEN vertical = 'Business & Public Administration' AND ((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)/24) <= 4.8 THEN 1
+					WHEN vertical = 'Data Science & Public Health' AND ((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)/24) <= 4.2 THEN 1
+					WHEN vertical = 'Law' AND ((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)/24) <= 1.8 THEN 1
+					WHEN vertical = 'Multiple Disciplines' AND ((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)/24) <= 3.2 THEN 1
+					WHEN vertical = 'Health/Nursing' AND ((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)/24) <= 5.6 THEN 1
+					WHEN vertical = 'Social Sciences' AND ((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)/24) <= 4.0 THEN 1
+					WHEN vertical = 'Education' AND ((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)/24) <= 3.0 THEN 1
+					ELSE 0
+				END
+		END) as arrtc_in_vertical_sla,
+	SUM(CASE
+			WHEN all_received_date IS NOT NULL
+		THEN (createddate::DATE - all_received_date::DATE)
+		END
+		) as whole_days_between_arrtc,
+	SUM(CASE
+			WHEN all_received_date IS NOT NULL
+		THEN ROUND((EXTRACT(EPOCH FROM createddate - all_received_date)/3600)::NUMERIC,2)
+		END
+		) as total_hours_between_arrtc
+FROM (
+SELECT 
+	app_id,
+	createddate,
+	oldvalue,
+	newvalue,
+	vertical,
+	CASE 
+		-- when it was changed from all items received to ready to complete
+		WHEN newvalue = 'Ready to Complete' --AND oldvalue = 'All Application Items Received' 
+		THEN 
+			CASE
+			-- THEN check is the row directly above was the record where it was changed to all received 
+				WHEN LAG(newvalue,1) OVER (PARTITION BY app_id ORDER BY createddate asc) = 'All Application Items Received'
+			-- if the record directly above (by createddate) was the all received entry, then pullout the date that happened
+				THEN LAG(createddate,1) OVER (PARTITION BY app_id ORDER BY createddate asc) 
+			END 
+	-- this returns the date it was changed to all received that happened right before it was changed to ready to complete
+	END as all_received_date
+FROM ers_status_history_and_vertical
+where --field = 'ERS_Application_Status__c' AND 
+		newvalue IN ('All Application Items Received', -- when it gets changed to all received
+					'Ready to Complete') -- when it gets changed to ready to complete
+) a 
+
+GROUP BY 1
+),
+lacking_to_ar as (
+--ALL RECEIVED TO READY TO COMPLETE SLA and Number of times
+SELECT 
+	app_id,
+	-- this totals the times that it was changed from all received to ready to complete
+	SUM(CASE WHEN lacking_date IS NOT NULL THEN 1 ELSE 0 END) as number_of_times_status_lacking,
+	--this totals the times that these changes happened within the defined SLA of 4 days
+	SUM(CASE
+			WHEN lacking_date IS NOT NULL
+		THEN (createddate::DATE - lacking_date::DATE)
+		END
+		) as whole_days_between_lacking_and_received,
+	SUM(CASE
+			WHEN lacking_date IS NOT NULL
+		THEN ROUND((EXTRACT(EPOCH FROM createddate - lacking_date)/3600)::NUMERIC,2)
+		END
+		) as total_hours_between_lacking_and_received
+FROM (
+SELECT 
+	app_id,
+	createddate,
+	oldvalue,
+	newvalue,
+	CASE 
+		-- when it was changed from all items received to ready to complete
+		WHEN newvalue = 'All Application Items Received' --AND oldvalue = 'All Application Items Received' 
+		THEN 
+			CASE
+			-- THEN check is the row directly above was the record where it was changed to all received 
+				WHEN LAG(newvalue,1) OVER (PARTITION BY app_id ORDER BY createddate asc) = 'Application Items Lacking'
+			-- if the record directly above (by createddate) was the all received entry, then pullout the date that happened
+				THEN LAG(createddate,1) OVER (PARTITION BY app_id ORDER BY createddate asc) 
+			END 
+	-- this returns the date it was changed to all received that happened right before it was changed to ready to complete
+	END as lacking_date
+FROM ers_status_history_and_vertical
+where --field = 'ERS_Application_Status__c' AND 
+		newvalue IN ('All Application Items Received', -- when it gets changed to all received
+					'Application Items Lacking') -- when it gets changed to ready to complete
+) a 
+GROUP BY 1
+),
+rtc_to_processed as (
+--ALL RECEIVED TO READY TO COMPLETE SLA and Number of times
+SELECT 
+	app_id,
+	-- this totals the times that it was changed from all received to ready to complete
+	SUM(CASE WHEN ready_to_complete_date IS NOT NULL THEN 1 ELSE 0 END) as processed_attempts,
+	--this totals the times that these changes happened within the defined SLA of 4 days
+	SUM(CASE 
+			WHEN ready_to_complete_date IS NOT NULL
+				AND (createddate::DATE - ready_to_complete_date::DATE <= 2) THEN 1 ELSE 0
+		END) as rtc_to_processed_in_dept_SLA,
+	SUM(CASE 
+		WHEN ready_to_complete_date IS NOT NULL THEN
+			CASE 
+				WHEN vertical = 'Business & Public Administration' AND ((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)/24) <= 2.6 THEN 1
+				WHEN vertical = 'Data Science & Public Health' AND ((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)/24) <= 1.8 THEN 1
+				WHEN vertical = 'Law' AND ((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)/24) <= 0.5 THEN 1
+				WHEN vertical = 'Multiple Disciplines' AND ((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)/24) <= 2.3 THEN 1
+				WHEN vertical = 'Health/Nursing' AND ((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)/24) <= 3.5 THEN 1
+				WHEN vertical = 'Social Sciences' AND ((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)/24) <= 2.5 THEN 1
+				WHEN vertical = 'Education' AND ((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)/24) <= 1.8 THEN 1
+				ELSE 0
+			END
+	END) as rtc_to_processed_in_vertical_sla,
+	SUM(CASE
+			WHEN ready_to_complete_date IS NOT NULL
+		THEN (createddate::DATE - ready_to_complete_date::DATE)
+		END
+		) as whole_days_between_rtc_and_processed,
+	SUM(CASE
+			WHEN ready_to_complete_date IS NOT NULL
+		THEN ROUND((EXTRACT(EPOCH FROM createddate - ready_to_complete_date)/3600)::NUMERIC,2)
+		END
+		) as total_hours_between_rtc_and_processed
+FROM (
+SELECT 
+	app_id,
+	createddate,
+	oldvalue,
+	newvalue,
+	vertical,
+	CASE 
+		-- when it was changed from all items received to ready to complete
+		WHEN newvalue = 'Application Processed' --AND oldvalue = 'Ready to Complete' 
+		THEN 
+			CASE
+			-- THEN check is the row directly above was the record where it was changed to all received 
+				WHEN LAG(newvalue,1) OVER (PARTITION BY app_id ORDER BY createddate asc) = 'Ready to Complete'
+			-- if the record directly above (by createddate) was the all received entry, then pullout the date that happened
+				THEN LAG(createddate,1) OVER (PARTITION BY app_id ORDER BY createddate asc) 
+			END 
+	-- this returns the date it was changed to all received that happened right before it was changed to ready to complete
+	END as ready_to_complete_date
+FROM ers_status_history_and_vertical
+where newvalue IN ('Ready to Complete', -- when it gets changed to ready to complete
+					'Application Processed') -- when it gets changed to processed
+) a 
+GROUP BY 1
+),
+ers_status_slas as (
+SELECT *
+FROM arrtc
+	LEFT JOIN lacking_to_ar USING (app_id)
+	LEFT JOIN rtc_to_processed USING (app_id)
+	
+),
+cohort_deadlines as (
+/*
+This table will pull in the submit and complete deadlines for each cohort for all cohorts that are either this year, the previous year, or the next year
+Match deadlines to application_info on degree_offering = degree_offering and term_month_year__c = app_cohort
+*/
+SELECT distinct on (degree_offering,term_month_year)
+	CASE WHEN degree_offering IN ('usc-mat') THEN -- usc-mat has deadlines both edd and mat under the same degree_offering name
+			CASE WHEN offering_name like 'EdD%' THEN 'usc-edd' ELSE 'usc-mat' end
+		WHEN degree_offering = 'gwu-mph' THEN
+			CASE WHEN offering_name = 'Healthinformatics' then 'gwu-mhi' else 'gwu-mph' end 
+		WHEN degree_offering = 'sc-msw' then
+			CASE WHEN  offering_name = 'DSW' then 'sc-dsw' else 'sc-msw' END
+		WHEN degree_offering = 'nu-mac' THEN 
+			CASE WHEN offering_name = 'MFT' or offering_name = 'Master of Science in Marriage and Family Therapy' THEN 'nu-mft' ELSE 'nu-mac' end -- there isn't any other offering name than MAC.
+		ELSE degree_offering
+	END as degree_offering,
+	--id as term_id,
+	term_month_year,
+	priority_submit_deadline,
+	submit_deadline,
+	complete_deadline,
+	decision_deadline_date,
+	registration_add_deadline_date as add_deadline,
+	registration_drop_deadline_date as drop_deadline,
+	enrollment_deposit_deadline_date as enrollment_deposit_deadline,
+	start_date as term_start_date,
+	end_date as term_end_date,
+	offering_name
+FROM degrees_salesforce.terms
+	WHERE degree_offering in (SELECT DISTINCT degree_offering FROM application_info)
+		AND term_year IN (DATE_PART('year',current_date)::TEXT, (DATE_PART('year',current_date)-1)::TEXT, (DATE_PART('year',current_date)+1)::TEXT)
+		AND NOT (degree_offering = 'vu-edu' AND name LIKE '%MED%')
+		AND NOT (degree_offering='mia-bus' AND name LIKE '%Session 2')
+order by degree_offering,term_month_year,complete_deadline
+),
+ers_status_dates as (
+select 
+	app_id,
+	MIN(case when newvalue = 'Ready to Complete' then createddate END) as status_ready_to_complete_date,
+	MIN(case when newvalue = 'Application Processed' then createddate END) as status_application_processed_date,
+	MIN(case when newvalue = 'All Application Items Received' then createddate end) as status_all_items_received_date,
+	MIN(case when newvalue = 'Application Items Lacking' then createddate end) as status_application_items_lacking_date,
+	MIN(case when lower(newvalue) like '%review%' then createddate end) as status_manager_review_date
+from ers_status_history 
+group by 1 
+)
+/*
+Main query below
+level of detail is one line per application
+*/
+select distinct
+	apps.*,
+	completer_name,
+	completer_email,
+	ers.rtc_attempts,
+	ers.arrtc_in_dept_sla,
+	ers.arrtc_in_vertical_sla,
+	ers.whole_days_between_arrtc,
+	ers.total_hours_between_arrtc,
+	ers.number_of_times_status_lacking,
+    ers.whole_days_between_lacking_and_received,
+    ers.total_hours_between_lacking_and_received,
+	ers.processed_attempts,
+	ers.rtc_to_processed_in_dept_sla,
+	ers.rtc_to_processed_in_vertical_sla,
+	ers.whole_days_between_rtc_and_processed,
+	ers.total_hours_between_rtc_and_processed,
+	d.priority_submit_deadline,
+	d.submit_deadline,
+	d.complete_deadline,
+	d.decision_deadline_date,
+	d.add_deadline,
+	d.drop_deadline,
+	d.enrollment_deposit_deadline,
+	d.term_start_date,
+	d.term_end_date,
+	status_ready_to_complete_date,
+	status_application_processed_date,
+	status_all_items_received_date,
+	status_application_items_lacking_date,
+	status_manager_review_date,
+	COUNT(*) OVER (PARTITION BY apps.app_id) as dupe_count --if >1 then duplicate
+FROM application_info apps
+	LEFT JOIN cohort_deadlines d on (d.degree_offering = apps.degree_offering AND d.term_month_year = apps.current_cohort)
+	LEFT JOIN ers_status_slas ers USING (app_id) --- WILL NEED TO ADJUST FOR USC-MAT and USC-MSW
+	left join ers_status_dates esd on esd.app_id = apps.app_id
+	left join completer_info ci on apps.app_id = ci.application_id
+
+
+ORDER BY apps.app_id
