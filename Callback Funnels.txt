@@ -1,3 +1,5 @@
+/* Query to show at what point in the funnel a callback was requested, if a call back happened, to eventually show at what point in the application funnel were callbacks happening and if they were fulfilled (the person was actualy called back), if they were more likely to move to the next stage of the funnel. 
+
 with stage as (
 
 SELECT 
