@@ -1,95 +1,189 @@
-with stage as (
-SELECT 
-'Leads' as dataset,
-c.tenant_code as domain,
-t.lead_id as id, 
-timezone('America/New_York',t.createddate at time zone 'UTC') as CBR_date_EST,
-timezone('America/New_York',c.created_date at time zone 'UTC') as lead_created_EST,
-timezone('America/New_York',c.first_call_date at time zone 'UTC') as first_call_EST,
-timezone('America/New_York',c.contact_type_datetime at time zone 'UTC') as PV_MC_EST,
-contact_type,
-null::timestamp as app_start_EST,
-null::timestamp as app_engage_EST,
-null::timestamp as app_sumbit_EST,
-null::timestamp as app_complete_EST,
-null::timestamp as final_decision_EST,
-null::timestamp as enrolled_date_EST
-
-FROM degrees_salesforce.tasks t
-LEFT JOIN degrees_monster.composite_leads c ON c.lead_id=t.lead_id 
-
-
-WHERE t.subject LIKE 'Callback%'
-AND subject NOT LIKE '%Benjamin Irving%'
-AND t.tenant_code IN ('ucb-mids','ucd-umt','pep-umt','cu-umt')
-AND t.lead_id IS NOT NULL
-
-UNION 
-
-SELECT 
-'Contacts' as dataset,
-c.tenant_code as domain,
-t.contact_id as id, 
-timezone('America/New_York',t.createddate at time zone 'UTC') as CBR_date_EST,
-timezone('America/New_York',c.created_date at time zone 'UTC') as lead_created_EST,
-timezone('America/New_York',c.first_call_date at time zone 'UTC') as first_call_EST,
-timezone('America/New_York',c.contact_type_datetime at time zone 'UTC') as PV_MC_EST,
-app_contact_type as contact_type,
-timezone('America/New_York',application_started_date at time zone 'UTC') as app_start_EST,
-timezone('America/New_York',application_engaged_date at time zone 'UTC') as app_engage_EST,
-timezone('America/New_York',application_submitted_date at time zone 'UTC') as app_sumbit_EST,
-timezone('America/New_York',application_completed_date at time zone 'UTC') as app_complete_EST,
-timezone('America/New_York',final_decision_date at time zone 'UTC') as final_decision_EST,
-timezone('America/New_York',enrolled_date at time zone 'UTC') as enrolled_date_EST
-
-FROM degrees_salesforce.tasks t
-LEFT JOIN degrees_monster.composite_leads c ON c.contact_id=t.contact_id
-
-
-WHERE t.subject LIKE 'Callback%'
-AND subject NOT LIKE '%Benjamin Irving%'
-AND t.tenant_code IN ('ucb-mids','ucd-umt','pep-umt','cu-umt')
-AND t.contact_id IS NOT NULL
-),
-
-callbackcomplete as (
-SELECT
-who_id,
-MIN(timezone('America/New_York',call_start_time at time zone 'UTC')) as calledback_date_EST
-
-FROM (SELECT * FROM degrees_salesforce.tasks WHERE subject LIKE 'Callback%') as t
-LEFT JOIN degrees_salesforce.talkdesk_activities ca ON ca.name_id=t.who_id 
-
-
-
-WHERE ca.tenant_code IN ('ucb-mids','ucd-umt','pep-umt','cu-umt')
-AND ca.type LIKE 'Outbound%'
-AND call_start_time>t.createddate
-GROUP BY 1
-),
-
-lastcallbefore as (
-SELECT
-who_id,
-MAX(timezone('America/New_York',call_start_time at time zone 'UTC')) as last_call_beforecbr_EST
-
-
-FROM (SELECT * FROM degrees_salesforce.tasks WHERE subject LIKE 'Callback%') as t
-LEFT JOIN degrees_salesforce.talkdesk_activities ca ON ca.name_id=t.who_id 
-
-
-
-WHERE ca.tenant_code IN ('ucb-mids','ucd-umt','pep-umt','cu-umt')
-AND ca.type LIKE 'Outbound%'
-AND call_start_time<t.createddate
-GROUP BY 1
-)
-
-SELECT s.*,
-c.calledback_date_EST,
-l.last_call_beforecbr_EST
-
-
-FROM stage s 
-LEFT JOIN callbackcomplete c ON s.id=c.who_id
+with stage as (
+
+SELECT 
+
+'Leads' as dataset,
+
+c.tenant_code as domain,
+
+t.lead_id as id, 
+
+timezone('America/New_York',t.createddate at time zone 'UTC') as CBR_date_EST,
+
+timezone('America/New_York',c.created_date at time zone 'UTC') as lead_created_EST,
+
+timezone('America/New_York',c.first_call_date at time zone 'UTC') as first_call_EST,
+
+timezone('America/New_York',c.contact_type_datetime at time zone 'UTC') as PV_MC_EST,
+
+contact_type,
+
+null::timestamp as app_start_EST,
+
+null::timestamp as app_engage_EST,
+
+null::timestamp as app_sumbit_EST,
+
+null::timestamp as app_complete_EST,
+
+null::timestamp as final_decision_EST,
+
+null::timestamp as enrolled_date_EST
+
+
+
+FROM degrees_salesforce.tasks t
+
+LEFT JOIN degrees_monster.composite_leads c ON c.lead_id=t.lead_id 
+
+
+
+
+
+WHERE t.subject LIKE 'Callback%'
+
+AND subject NOT LIKE '%name%' --removed names 
+
+AND t.tenant_code IN (XXX) --remove school name 
+
+AND t.lead_id IS NOT NULL
+
+
+
+UNION 
+
+
+
+SELECT 
+
+'Contacts' as dataset,
+
+c.tenant_code as domain,
+
+t.contact_id as id, 
+
+timezone('America/New_York',t.createddate at time zone 'UTC') as CBR_date_EST,
+
+timezone('America/New_York',c.created_date at time zone 'UTC') as lead_created_EST,
+
+timezone('America/New_York',c.first_call_date at time zone 'UTC') as first_call_EST,
+
+timezone('America/New_York',c.contact_type_datetime at time zone 'UTC') as PV_MC_EST,
+
+app_contact_type as contact_type,
+
+timezone('America/New_York',application_started_date at time zone 'UTC') as app_start_EST,
+
+timezone('America/New_York',application_engaged_date at time zone 'UTC') as app_engage_EST,
+
+timezone('America/New_York',application_submitted_date at time zone 'UTC') as app_sumbit_EST,
+
+timezone('America/New_York',application_completed_date at time zone 'UTC') as app_complete_EST,
+
+timezone('America/New_York',final_decision_date at time zone 'UTC') as final_decision_EST,
+
+timezone('America/New_York',enrolled_date at time zone 'UTC') as enrolled_date_EST
+
+
+
+FROM degrees_salesforce.tasks t
+
+LEFT JOIN degrees_monster.composite_leads c ON c.contact_id=t.contact_id
+
+
+
+
+
+WHERE t.subject LIKE 'Callback%'
+
+AND subject NOT LIKE '%name%' --removed names 
+
+AND t.tenant_code IN (XXX) --remove school name 
+
+AND t.contact_id IS NOT NULL
+
+),
+
+
+
+callbackcomplete as (
+
+SELECT
+
+who_id,
+
+MIN(timezone('America/New_York',call_start_time at time zone 'UTC')) as calledback_date_EST
+
+
+
+FROM (SELECT * FROM degrees_salesforce.tasks WHERE subject LIKE 'Callback%') as t
+
+LEFT JOIN degrees_salesforce.talkdesk_activities ca ON ca.name_id=t.who_id 
+
+
+
+
+
+
+
+WHERE ca.tenant_code IN ('XXXX') --remove school name
+
+AND ca.type LIKE 'Outbound%'
+
+AND call_start_time>t.createddate
+
+GROUP BY 1
+
+),
+
+
+
+lastcallbefore as (
+
+SELECT
+
+who_id,
+
+MAX(timezone('America/New_York',call_start_time at time zone 'UTC')) as last_call_beforecbr_EST
+
+
+
+
+
+FROM (SELECT * FROM degrees_salesforce.tasks WHERE subject LIKE 'Callback%') as t
+
+LEFT JOIN degrees_salesforce.talkdesk_activities ca ON ca.name_id=t.who_id 
+
+
+
+
+
+
+
+WHERE ca.tenant_code IN ('XXX') --remove school name
+
+AND ca.type LIKE 'Outbound%'
+
+AND call_start_time<t.createddate
+
+GROUP BY 1
+
+)
+
+
+
+SELECT s.*,
+
+c.calledback_date_EST,
+
+l.last_call_beforecbr_EST
+
+
+
+
+
+FROM stage s 
+
+LEFT JOIN callbackcomplete c ON s.id=c.who_id
+
 LEFT JOIN lastcallbefore l ON s.id=l.who_id
