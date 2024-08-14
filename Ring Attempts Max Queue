@@ -1,0 +1,99 @@
+/* Query to look at inbound calls rolled up. 
+
+with ring_attempts as (SELECT 
+    ra.*,
+    role_name,
+    profile_name,
+    timezonesidkey,
+    timezone (u2.timezonesidkey,ring_started_at_time at time zone 'UTC') as activity_start_at_tz, --These lines change the timzone to the AC tz
+    timezone(u2.timezonesidkey,ring_finished_at_time at time zone 'UTC') as activity_end_at_tz,
+ 	--calcs below change the call time to the uni tz
+ 	CASE 
+		WHEN ra.domain='den-umt' THEN timezone('America/Denver', ra.ring_started_at_time at time zone 'UTC')
+		WHEN ra.domain IN('pep-umt','ucb-mids','ucd-umt','wu-llm') THEN timezone('America/Los_Angeles', ra.ring_started_at_time at time zone 'UTC')
+		WHEN ra.domain IN ('bay-umt','nu-mac','rice-umt','vu-umt','smu-mds','tec-umt') THEN timezone('America/Chicago', ra.ring_started_at_time at time zone 'UTC')
+		WHEN ra.domain='ul-umt' THEN timezone('Europe/London', ra.ring_started_at_time at time zone 'UTC')
+		ELSE timezone('America/New_York',ra.ring_started_at_time at time zone 'UTC')
+	END as ringstart_school_tz,
+	CASE
+		WHEN ra.domain='den-umt' THEN timezone('America/Denver', ra.ring_finished_at_time at time zone 'UTC')
+		WHEN ra.domain IN('pep-umt','ucb-mids','ucd-umt','wu-llm') THEN timezone('America/Los_Angeles', ra.ring_finished_at_time at time zone 'UTC')
+		WHEN ra.domain IN ('bay-umt','nu-mac','rice-umt','vu-umt','smu-mds','tec-umt') THEN timezone('America/Chicago', ra.ring_finished_at_time at time zone 'UTC')
+		WHEN ra.domain='ul-umt' THEN timezone('Europe/London', ra.ring_started_at_time at time zone 'UTC')
+		ELSE timezone('America/New_York',ra.ring_started_at_time at time zone 'UTC')
+	END as ringend_school_tz
+FROM talkdesk.talkdesk_api_ring_attempts ra
+   /* left join (select distinct on (domain,email)
+                    name,
+                    email,
+                    domain,
+                    timezonesidkey,
+                    role_name,
+                    profile_name
+                from monster.users
+                    order by domain,email,createddate desc
+                ) u1 on (
+                          ra.user_email = u1.email
+                            and ra.domain = u1.domain
+                        )*/
+	 left join (select distinct on (domain,name)
+		            name,
+		            email,
+		            domain,
+		            timezonesidkey,
+		            role_name,
+		            profile_name,
+		            isactive
+		        from monster.users
+		            order by domain,name,createddate desc
+		        ) u2 on (ra.user_name = u2.name 
+		                    and ra.domain = u2.domain )
+where ring_started_at_time >= current_date - '30 days'::interval
+and user_name not in ('External Phone Number','If-No-Answer Agent','Talkdesk Service User (DO NOT DELETE)','Brad Adams','Lauren Stone','Prashant Bhargava')
+and u2.role_name is not null
+and u2.isactive = 't'
+),
+
+queue as (
+SELECT *, max(case when queue_rank = 1 then ring_groups end) over (partition by user_name) as max_queue
+FROM  ( 
+	SELECT *, row_number() over (partition by user_name order by max_call desc) as queue_rank
+FROM  (
+			SELECT 
+				domain,
+				user_name,
+				ring_groups,
+				team_name,
+				started_at,
+				count(*) as calls_to_queue,
+				MAX(started_at) as max_call
+			FROM talkdesk.talkdesk_api_contacts c
+			WHERE ring_groups LIKE '%admissions queue%' OR ring_groups LIKE '%success queue%'
+			GROUP BY 1,2,3,4,5
+) a
+     ) b
+)
+select *,count(*) OVER (partition by ring_attempt_id) as dupe_check
+from (
+select distinct on (ring_attempt_id)
+	ra.*,
+	q.max_queue,
+	us.status_label,
+	us.status_start_at,
+	us.status_end_at,
+	us.status_time
+	/*co.phone_display_name,
+	co.contact_person_number*/
+from ring_attempts ra
+	left join talkdesk.talkdesk_api_user_status us on (us.domain = ra.domain
+                                                                AND us.user_email = ra.user_email
+                                                                AND ra.ring_started_at_time > us.status_start_at
+                                                                AND ra.ring_started_at_time <= us.status_end_at
+                                                        )
+    --left join talkdesk.talkdesk_api_contacts co ON ra.interaction_id=co.interaction_id
+    left join queue q ON q.user_name=ra.user_name
+order by ring_attempt_id,status_start_at desc
+) a
+
+
+;
