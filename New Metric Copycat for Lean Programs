@@ -1,0 +1,53 @@
+/* Query build for BU programs and potentially other OPM programs. Want to create MC/PV FU metrics for ACs that only do outbound calls and are not the owner of the lead or app. */
+-- Incomplete 
+
+with callsmade as (
+
+SELECT DISTINCT cl.*
+
+FROM degrees_monster.call_activity ca
+LEFT JOIN degrees_monster.composite_leads cl ON ca.lead_id=cl.lead_id
+
+WHERE sf_user_name='Jimmy Mahgoub' 
+AND date_part('year',call_start_time) >= date_part('year',current_date) - 1
+AND ca.lead_id IS NOT NULL AND cl.lead_id IS NOT NULL
+
+ORDER BY cl.lead_id
+)
+
+SELECT
+u.name as lead_owner,
+sf_user_name as call_owner,
+c.lead_id,
+c.opportunity_id,
+created_date as lead_created,
+application_started_date,
+application_engaged_date,                            /* Left off- call_owner is not the right call_ owner, */
+application_submitted_date,
+application_completed_date,
+final_decision_date,                        
+enrolled_date,
+contact_type,
+contact_type_datetime,
+first_call_post_mc,
+first_call_datetime as first_stc,
+MIN(call_start_time) as first_call_AC
+
+FROM callsmade c
+LEFT JOIN degrees_monster.call_activity ca ON ca.lead_id=c.lead_id
+LEFT JOIN degrees_monster_adm.lead_first_call_post_meaningful_conversation mc ON mc.lead_id=c.lead_id
+LEFT JOIN degrees_monster_adm.lead_first_call lfc ON lfc.lead_id=c.lead_id
+LEFT JOIN monster.users u ON c.owner_id=u.id
+
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+
+;
+
+
+SELECT DISTINCT degree_offering, MAX(call_start_time)
+
+FROM degrees_monster.call_activity
+
+WHERE sf_user_name='Jimmy Mahgoub'
+
+GROUP BY degree_offering
