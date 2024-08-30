@@ -1,4 +1,4 @@
--- A sub query that was then implemented with data science to create a new schema. 
+-- A sub query that was then implemented with data science to create a new schema related to a more accurate meaningful conversation follow up metric. 
 
 select ca.tenant_code,
 					ca.lead_id,
