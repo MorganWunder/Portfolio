@@ -1,0 +1,107 @@
+WITH OpenX as (
+-- Query for Newly Opened CRs 
+SELECT DISTINCT DATEFROMPARTS(Year(datecreated),Month(datecreated),1) as MonthYear,
+COUNT(Identifier) OVER (Partition by MONTH(DateCreated),Year(DateCreated),OwningProject) as Totalby_datecreated,
+OwningProject
+
+FROM [DevonWay].[DWay].[Condition]
+
+WHERE (OwningProject LIKE 'INL S%')
+),
+
+Closed as (
+-- Query for Newly Closed
+SELECT DISTINCT DATEFROMPARTS(Year(DateClosed),Month(DateClosed),1) as MonthYear,
+COUNT(Identifier) OVER (Partition by MONTH(DateClosed),Year(DateClosed),OwningProject) as Totalby_dateclosed,
+OwningProject
+
+FROM [DevonWay].[DWay].[Condition]
+
+WHERE (OwningProject LIKE 'INL S%')
+AND DateClosed IS NOT NULL
+),
+--Query to see how many open CRs are greater then 90 days at the end of each month. 
+DaysOpen as( SELECT 
+        Identifier, 
+        DATEFROMPARTS(YEAR(DateClosed), MONTH(DateClosed), 1) as MonthDateClosed,
+        DATEFROMPARTS(YEAR(DateCreated), MONTH(DateCreated), 1) as DateCreated, 
+        OwningProject,
+        CASE 
+            WHEN DateClosed IS NULL THEN DATEDIFF(day, DateCreated, GETDATE())
+            WHEN DateClosed IS NOT NULL THEN DATEDIFF(day, DateCreated, DateClosed)
+        END AS DaysOpen,
+         DATEFROMPARTS(YEAR(DATEADD(day, 90, DateCreated)), MONTH(DATEADD(day, 90, DateCreated)), 1)
+         AS Monthof90
+    FROM DevonWay.DWay.Condition
+    WHERE 
+        OwningProject LIKE 'INL S%'
+        AND CurrentState NOT LIKE 'Canceled'
+
+),
+--Query to get consistent months 
+Months AS (
+    SELECT DISTINCT DATEFROMPARTS(YEAR(DateCreated), MONTH(DateCreated), 1) AS MonthYear
+    FROM DevonWay.DWay.Condition
+    WHERE DateCreated >= DATEADD(year, -4, GETDATE())
+),
+--Grouped by the month a CRs gets 90 days old 
+NinetyDaysCurrent as (
+	SELECT DISTINCT
+		m.MonthYear,
+		do.OwningProject,
+		SUM(CASE WHEN Monthof90=m.MonthYear AND (MonthDateClosed>m.Monthyear OR MonthDateClosed IS NULL) THEN 1  
+			ELSE 0 
+			END) AS New90, --How many became or will become greater then 90 days in that month that were still open in that month
+		SUM(CASE WHEN DaysOpen>=90 and MonthDateClosed IS NULL THEN 1 ELSE 0 END) as TotalCurrent90 --Of those that are 90+ how many are still open. 
+	FROM Months m
+	LEFT JOIN DaysOpen do ON m.MonthYear = do.Monthof90
+
+GROUP BY 
+    m.MonthYear, 
+    do.OwningProject
+), 
+--Grouped by the date a CR closes
+NinetyDaysClosed as(
+		SELECT DISTINCT
+			m.MonthYear,
+			do.OwningProject,
+			SUM(CASE WHEN DaysOpen>=90 AND MonthDateClosed<=m.monthyear THEN 1 ELSE 0 END) as Closed90 --Of those 90+ how many did we closed that month
+
+		FROM Months m
+	LEFT JOIN DaysOpen do ON m.MonthYear = do.MonthDateClosed
+
+GROUP BY 
+    m.MonthYear, 
+    do.OwningProject
+),
+
+Previous as (
+-- Query to the previous months open and closed to allow for easier MoM difference 
+SELECT *, LAG(Totalby_dateclosed,1) over (partition by rank ORDER BY OwningProject,MonthYear asc) as Prev_Month_Closed,
+		 LAG(Totalby_datecreated,1) over (partition by rank ORDER BY OwningProject,MonthYear asc) as Prev_Month_Open
+
+		
+
+FROM (
+		SELECT O.OwningProject,O.MonthYear,Totalby_dateclosed,Totalby_datecreated, ROW_NUMBER() over (partition by O.MonthYear,O.OwningProject order by O.MonthYear) as rank
+
+		FROM OpenX O
+		LEFT JOIN Closed C ON (O.MonthYear=C.MonthYear AND O.OwningProject=C.OwningProject)
+
+		) a 
+)
+
+
+SELECT DISTINCT P.*,New90,TotalCurrent90,Closed90,
+CAST(ROUND((CAST(Totalby_dateclosed as DECIMAL(7,2))-CAST(Prev_Month_Closed as DECIMAL(7,2)))/CAST(Prev_Month_Closed as DECIMAL (7,2)),2) as FLOAT) as MoM_Closed_Diff,
+CAST(ROUND((CAST(Totalby_datecreated as DECIMAL(7,2))-CAST(Prev_Month_Open as DECIMAL(7,2)))/CAST(Prev_Month_Open as DECIMAL (7,2)),2) as FLOAT) as MoM_Open_Diff,
+SUM(Totalby_dateclosed) Over (Order By P.OwningProject,P.MonthYear 
+	ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as Running_Closed,
+SUM(Totalby_datecreated) Over (Order By P.OwningProject,P.MonthYear 
+	ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as Running_Open
+
+FROM Previous P
+LEFT JOIN NinetyDaysCurrent N ON P.MonthYear=N.MonthYear AND P.OwningProject = N.OwningProject
+LEFT JOIN NinetyDaysClosed NC ON P.MonthYear=NC.MonthYear AND P.OwningProject = NC.OwningProject
+
+ORDER BY P.OwningProject,MonthYear
