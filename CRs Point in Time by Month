@@ -20,11 +20,14 @@ FROM [DevonWay].[DWay].[Condition]
 WHERE (OwningProject LIKE 'INL S%')
 AND DateClosed IS NOT NULL
 ),
---Query to see how many open CRs are greater then 90 days at the end of each month. 
+--Query to see how many open CRs are greater then 90 days at the end of each month.
+-- Where the date it becomes greater then 90 is within the monthyear, and it was still open during that same month year. 
+  
 DaysOpen as( SELECT 
         Identifier, 
         DATEFROMPARTS(YEAR(DateClosed), MONTH(DateClosed), 1) as MonthDateClosed,
         DATEFROMPARTS(YEAR(DateCreated), MONTH(DateCreated), 1) as DateCreated, 
+
         OwningProject,
         CASE 
             WHEN DateClosed IS NULL THEN DATEDIFF(day, DateCreated, GETDATE())
@@ -38,13 +41,12 @@ DaysOpen as( SELECT
         AND CurrentState NOT LIKE 'Canceled'
 
 ),
---Query to get consistent months 
 Months AS (
     SELECT DISTINCT DATEFROMPARTS(YEAR(DateCreated), MONTH(DateCreated), 1) AS MonthYear
     FROM DevonWay.DWay.Condition
     WHERE DateCreated >= DATEADD(year, -4, GETDATE())
 ),
---Grouped by the month a CRs gets 90 days old 
+
 NinetyDaysCurrent as (
 	SELECT DISTINCT
 		m.MonthYear,
@@ -60,8 +62,8 @@ GROUP BY
     m.MonthYear, 
     do.OwningProject
 ), 
---Grouped by the date a CR closes
-NinetyDaysClosed as(
+
+NinetyDaysClosed as( 
 		SELECT DISTINCT
 			m.MonthYear,
 			do.OwningProject,
@@ -73,6 +75,20 @@ NinetyDaysClosed as(
 GROUP BY 
     m.MonthYear, 
     do.OwningProject
+),
+
+SL as (
+
+SELECT DISTINCT DATEFROMPARTS(Year(datecreated),Month(datecreated),1) as MonthYear, OwningProject,
+COUNT(Identifier) OVER (Partition by MONTH(DateCreated),Year(DateCreated),OwningProject) as TotalSL2_3
+
+
+
+FROM DevonWay.DWay.Condition
+
+WHERE OwningProject LIKE 'INL S%'
+AND SignificanceLevel IN (2,3)
+
 ),
 
 Previous as (
@@ -92,7 +108,7 @@ FROM (
 )
 
 
-SELECT DISTINCT P.*,New90,TotalCurrent90,Closed90,
+SELECT DISTINCT P.*,New90,TotalCurrent90,Closed90,TotalSL2_3,
 CAST(ROUND((CAST(Totalby_dateclosed as DECIMAL(7,2))-CAST(Prev_Month_Closed as DECIMAL(7,2)))/CAST(Prev_Month_Closed as DECIMAL (7,2)),2) as FLOAT) as MoM_Closed_Diff,
 CAST(ROUND((CAST(Totalby_datecreated as DECIMAL(7,2))-CAST(Prev_Month_Open as DECIMAL(7,2)))/CAST(Prev_Month_Open as DECIMAL (7,2)),2) as FLOAT) as MoM_Open_Diff,
 SUM(Totalby_dateclosed) Over (Order By P.OwningProject,P.MonthYear 
@@ -103,5 +119,7 @@ SUM(Totalby_datecreated) Over (Order By P.OwningProject,P.MonthYear
 FROM Previous P
 LEFT JOIN NinetyDaysCurrent N ON P.MonthYear=N.MonthYear AND P.OwningProject = N.OwningProject
 LEFT JOIN NinetyDaysClosed NC ON P.MonthYear=NC.MonthYear AND P.OwningProject = NC.OwningProject
+LEFT JOIN SL ON SL.MonthYear=P.MonthYear AND P.OwningProject=SL.OwningProject
 
 ORDER BY P.OwningProject,MonthYear
+
