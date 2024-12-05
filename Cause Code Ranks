@@ -1,0 +1,21 @@
+-- Cause Code Ranking
+WITH total as (
+SELECT DISTINCT DATEFROMPARTS(Year(DateCreated),Month(DateCreated),1) as MonthYear,
+CauseCodeName, 
+COUNT(cc.Identifier) over 
+	(Partition by CauseCodeName,DATEFROMPARTS(Year(DateCreated),Month(DateCreated),1) ORDER by DATEPART(Year,datecreated), DATEPART(month,datecreated)) as total
+
+FROM [DevonWay].[DWay].[CauseCodes] cc
+LEFT JOIN [DevonWay].[DWay].[Condition] c ON c.Identifier=cc.Identifier
+
+WHERE OwningProject LIKE 'INL S%' 
+--AND DateCreated>= Dateadd(Month, Datediff(Month, 0, DATEADD(m, -6,  current_timestamp)), 0)
+
+GROUP BY DateCreated,CauseCodeName, cc.Identifier
+)
+
+SELECT *,ROW_NUMBER() over (Partition by MonthYear Order by total desc) as rank 
+
+FROM total 
+
+ORDER BY MonthYear
