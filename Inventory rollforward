@@ -1,0 +1,159 @@
+with reformat as (
+--removed columns that aren't used, changed data types, and added the inv_id + time_id column. 
+SELECT 
+ACCT_NO,
+TRIM(' ' FROM AS_STATUS) as AS_STATUS,
+BEDROOM,
+REGEXP_REPLACE(BLDG,'\s+','') as BLDG,
+CO_DATE,
+CASE WHEN BLDG IN (17,18,19) and PHASE !='7' THEN 'CO''d' ELSE COD END as COD, --To adjust for Vegas specifics 
+CASE WHEN BLDG IN ('17','18','19') AND PHASE != '7' THEN 1
+    WHEN BLDG IN ('20','21') AND PHASE NOT IN ('6', '7') THEN 1 ELSE 0 END as LV_remove, --Used to remove later on 
+DOLLARS,
+INTERVAL,
+REGEXP_REPLACE(LOC_CODE,'\s+','') as Loc_code, --number
+LOC_CODE2, --name 
+TO_DATE(PERIOD,'YYYY-MM') as PERIOD,
+TO_DATE(TO_CHAR(ADD_MONTHS(TO_DATE(PERIOD, 'YYYY-MM'), -1), 'YYYY-MM'), 'YYYY-MM') AS PREV_PERIOD,
+SEASON,
+STATUS,
+TRIM(' ' FROM SUB_UNIT) as SUB_UNIT,
+TIME_FLG,
+UNIT,
+week,
+REGEXP_REPLACE(to_char(loc_code)||'-'||bldg||'-'||Unit||sub_unit||to_char(week)||time_flg,'\s+','') as inven_id,
+REGEXP_REPLACE(PERIOD||'-'||to_char(loc_code)||'-'||bldg||'-'||Unit||TRIM(' ' FROM sub_unit)||to_char(week)||time_flg,'\s+','') as time_id
+
+
+FROM INV_MTH1_HIST
+
+--Current and previous 2 years 
+WHERE TO_NUMBER(SUBSTR(period, 1, 4)) IN (TO_CHAR(SYSDATE, 'YYYY'), TO_CHAR(ADD_MONTHS(SYSDATE, -12), 'YYYY'),TO_CHAR(ADD_MONTHS(SYSDATE, -25), 'YYYY'))
+AND loc_code='77'
+),
+
+--Counts how many itmes that piece of inventory shows up. 
+--If it only shows up once, then there is no previous period to use. 
+countocc as (
+SELECT INVEN_ID, COUNT(INVEN_ID) as occur
+
+FROM reformat 
+
+GROUP BY inven_id
+),
+
+--Cleaning to use the current period as the previous period if it's a new piece of inventory. 
+clean as (
+SELECT acct_no,
+as_status,
+bedroom,
+bldg,
+co_date,
+cod,
+lv_remove,
+dollars,
+interval,
+loc_code,
+loc_code2,
+period,
+CASE WHEN occur=1 THEN period ELSE prev_period END as PREV_PERIOD,
+season,
+status,
+sub_unit,
+time_flg,
+unit,
+week,
+r.inven_id,
+time_id
+
+FROM reformat r
+JOIN countocc c ON r.inven_id=c.inven_id
+),
+
+--self join onto the reformatted table to attach the previous month.  
+previousjoin as (
+SELECT 
+  r.*,
+  r2.PERIOD AS PM,
+  r2.ACCT_NO AS PM_ACCT_NO,
+  r2.AS_STATUS AS PM_AS_STATUS,
+  r2.cod as PM_cod,
+  r2.INVEN_ID AS PM_INVEN_ID,
+  r2.TIME_ID AS PM_TIME_ID,
+  CASE WHEN r.ACCT_NO = r2.ACCT_NO THEN 0 
+  WHEN r.ACCT_NO IS null and r2.Acct_no is NULL THEN 0 ELSE 1 END AS DIFF_ACCT,
+  CASE WHEN r.AS_STATUS = r2.AS_STATUS THEN 0 ELSE 1 END AS DIFF_AS,
+  CASE WHEN r.cod=r2.cod THEN 0 ELSE 1 END AS DIFF_cod
+FROM clean r
+INNER JOIN (
+  -- Subquery to shift data to the previous period
+  SELECT 
+    r.*,
+    REGEXP_REPLACE(PREV_PERIOD || '-' || TO_CHAR(LOC_CODE) || '-' || BLDG || '-' || UNIT || SUB_UNIT || TO_CHAR(WEEK) || TIME_FLG,'\s+','') AS PM_TIME_ID
+  FROM reformat r
+) r2 
+ON r.INVEN_ID = r2.INVEN_ID 
+   AND r.PREV_PERIOD = r2.PERIOD
+WHERE r.LOC_CODE IN ('77') 
+
+),
+
+diff as(
+SELECT p.*,
+CASE WHEN DIFF_ACCT+DIFF_AS+DIFF_COD=0 THEN 0 ELSE 1 END as DIFF_ANY,
+--Checking for sales
+CASE WHEN DIFF_AS=1 AND as_status='Sold' THEN 1 
+WHEN DIFF_acct=1 and as_status='Sold' THEN 1
+ELSE 0 END as sale,
+
+--Checking for return
+CASE WHEN DIFF_AS=1 and AS_STATUS= 'Avail' THEN 1 
+WHEN DIFF_ACCT=1 and (as_status='Sold' AND PM_AS_Status='Sold') THEN 1 
+ELSE 0 END as return,
+
+--CO changes
+CASE WHEN DIFF_cod=1 AND PM_AS_Status='Avail' THEN 1 ELSE 0 END as CO_change
+
+
+FROM previousjoin p
+
+ORDER BY Period, inven_id
+)
+
+
+
+
+--Aggregated Sold, Returned, and Available
+SELECT DISTINCT Loc_code, period,cod, bedroom,
+SUM(CASE WHEN return=1 THEN Interval END) as Return_ints,
+SUM(CASE WHEN sale=1 THEN Interval END) as Sold_ints,
+SUM(CASE WHEN CO_change=1 THEN interval END) as CO_Change, 
+SUM(CASE WHEN LV_remove=0 AND AS_Status='Avail' THEN interval END) as avail_ints, 
+SUM(CASE WHEN LV_remove=0 AND AS_status='Avail' THEN dollars END) as avail_dollar
+
+
+FROM diff 
+
+GROUP BY loc_code, period, cod, bedroom
+
+
+UNION 
+
+--Have to union this seperately so that it lands in the same column for easy removal, the goal is to remove these pieces. 
+SELECT DISTINCT loc_code,period, 
+CASE WHEN LV_remove=1 AND AS_status='Sold' AND BLDG IN ('17','18','19','20','21') THEN 'CO''d' ELSE COD END as cod,
+bedroom,
+0 as return_ints,
+0 as sold_ints,
+0 as co_change,
+SUM(CASE WHEN LV_remove=1 AND AS_status='Sold' AND BLDG IN ('17','18','19','20','21') THEN -interval END) AS avail_ints,
+SUM(CASE WHEN LV_remove=1 AND AS_status='Sold' AND BLDG IN ('17','18','19','20','21') THEN -dollars END) AS avail_dollar
+
+FROM diff
+
+GROUP BY loc_code, period, cod, bedroom, lv_remove,as_status,bldg
+
+
+ORDER BY period, COD, bedroom
+
+
