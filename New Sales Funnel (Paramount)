@@ -1,0 +1,300 @@
+
+--Query 1 in Alteryx that creates the Paramount_tosales table in Oracle SQL. 
+
+
+WITH base AS (
+    SELECT DISTINCT ic.invite_seq_id, i.invite_number, se.sales_effort_seq_id, i.country_code
+    FROM sam_invite i
+    INNER JOIN sam_invite_comment ic
+        ON ic.invite_seq_id = i.invITE_SEQ_ID
+    INNER JOIN sam_invite_sales_effort se
+        ON se.invite_seq_id = i.INVITE_SEQ_ID
+    WHERE prospect_source = '5120800'
+),
+
+acct_detail AS (
+    SELECT
+        b.*,
+        se.sales_effort_date,
+        se.sales_effort_type,
+        se.sales_effort_status,
+        CASE
+            WHEN se.sales_effort_status = 'COMPLETED' THEN 1
+            WHEN se.sales_effort_status = 'ON TOUR'  THEN 2
+            WHEN se.sales_effort_status = 'SCHEDULED' THEN 3
+            WHEN se.sales_effort_status = 'CANCEL' THEN 4
+            ELSE 5
+        END AS tour_status_rank,
+        CASE
+            WHEN contract_type='TIMESHARE' THEN 1
+            WHEN contract_type='VOA' THEN 2
+            ELSE 3 END as contract_rank,
+        se.sales_location,
+        se.sales_department,
+        mr.*
+    FROM base b
+    LEFT JOIN sam_sales_effort se
+        ON se.sales_effort_seq_id = b.sales_effort_seq_id
+    LEFT JOIN (
+        SELECT
+            c.acct_no,
+            c.contr_date,
+            c.contr_site_orig AS cso,
+            c.down_pay,
+            c.survey_no,
+            c.full_dwn_date,
+            c.contr_orig,
+            c.sales_volume,
+            m.status,
+            m.detail,
+            m.status_date,
+            m.detail_date,
+            m.type_code,
+            m.type_date,
+            c.contract_type
+        FROM MRCONTP c
+        LEFT JOIN MRMASTERP m
+            ON c.acct_no = m.acct_no
+        WHERE c.survey_no IS NOT NULL
+          AND EXTRACT(YEAR FROM c.contr_date) >= 2025
+    ) mr
+        ON mr.survey_no = b.sales_effort_seq_id
+),
+payouts AS (
+    SELECT resort,
+    invite_number,
+    tour_date,
+    location_number, 
+    tours as tours_orig,
+    CASE WHEN tour_payout>0 then 1 ELSE 0 END as tours,
+    tour_payout as tour_payout_org,
+    total,
+    insdate,
+    rank() OVER (Partition by invite_number ORDER BY tour_payout desc) as distrank
+    FROM paramount_payouts
+ 
+)
+
+    SELECT
+        p.*,
+        ad.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY COALESCE(p.invite_number, ad.invite_number)
+            ORDER BY ad.tour_status_rank ASC, p.total DESC, contract_rank asc
+        ) AS rankpay
+    FROM payouts p
+    FULL JOIN acct_detail ad
+        ON p.invite_number = ad.invite_number
+WHERE distrank=1 OR distrank is null
+
+
+
+----------------------------------------------------------------------------
+
+
+--Query 2 in Alteryx that creates the daily send report "Daily Contracts for TAB- Pender" 
+
+
+with base as (
+Select pts.*, to_char(pts.sales_effort_date,'mm-yyyy') as tour_my, --Month and year of the sales effort date
+to_char(add_months(sysdate,-1),'mm-yyyy') as reporting_my, --rolling month year for the current time period we're looking at 
+TO_CHAR(pts.contr_date,'mm-yyyy') as contr_my, --month year of contract date 
+TRUNC(add_months(sysdate,-1),'MM') as reporting_start, --rolling beginning of the reporting period
+TRUNC(ADD_MONTHS(SYSDATE, -1), 'MM') + INTERVAL '1' MONTH - INTERVAL '1' DAY as reporting_end, --Last day of the previous month
+TRUNC(sysdate,'mm')+14 as status_cutoff, --rolling end of the status end period 
+TRUNC(add_months(sysdate,-1),'mm')+14 as previous_period_cutoff,
+'TAB' as prospect_source,
+third_party_invite_no as Tab_invite_id, 
+--prospect_first_name as first_name,
+--prospect_last_name as last_name, 
+sn.last_name,
+sn.first_name,
+en.first_name as rep_first_name,
+en.last_name as rep_last_name
+
+
+
+FROM paramount_tosales pts
+left JOIN ( --Customer name 
+    SELECT DISTINCT sales_effort_seq_id, last_name,first_name
+
+    FROM sam_sales_effort_name sn 
+
+    WHERE record_number=1
+) sn ON pts.sales_effort_seq_id=sn.sales_effort_seq_id
+
+LEFT JOIN ( --Using tour log from the field, has TAB IDs 
+    SELECT third_party_invite_no, prospect_first_name, Prospect_last_name, tour_seq_id
+    
+    FROM www.paramount_tour_log
+    ) ptl ON ptl.tour_seq_id=pts.SALES_EFFORT_SEQ_ID
+-------------------------------------------------------------------------------------
+LEFT JOIN ( --Rep name
+    SELECT DISTINCT mr.acct_no,comm_sls_no, first_name,last_name
+ 
+    FROM mrcontp mr
+    LEFT JOIN pub_employee pe On mr.comm_sls_no=pe.employee_seq_id 
+
+
+
+)en ON en.acct_no=pts.acct_no
+---------------------------------------------------------------------------------------
+WHERE pts.acct_no is not null
+AND pts.acct_no NOT IN (SELECT ACCT_no FROM paramount_goodhist) 
+AND contract_type NOT LIKE 'VOA'
+),
+
+status_hist as (
+
+SELECT acct_no, status,detail,type_code, mod_dt, contr_date, mkt_src,
+
+CASE WHEN diff=1 THEN contr_date ELSE TRUNC(mod_dt) END as mod_dt_adj
+ 
+
+FROM (
+    SELECT acct_no, status,detail,type_code, mod_dt,contr_date, mkt_src,TRUNC(mod_dt)-contr_date as diff 
+
+    FROM (
+        SELECT sh.*,mr.contr_date, row_number() OVER (partition by sh.acct_no, trunc(sh.mod_dt)ORDER BY sh.mod_dt desc,status_seq desc) as daily_type_rank, mkt_src
+            FROM status_detail_hist sh
+            LEFT JOIN mrcontp mr ON sh.acct_no=mr.acct_no
+            WHERE mr.mkt_src IN ('5120800','0303770') --Add these other sources for the one off case of a person having 2 contracts. 
+        )a 
+        
+    
+    WHERE daily_type_rank=1
+) b
+
+
+),
+
+first_pender_date as (
+
+SELECT acct_no,status,detail,type_code,mod_dt_adj as first_pender_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt_adj asc) as first_pender_type
+
+    FROM status_hist sh
+
+    WHERE type_code='P' )a
+    
+where first_pender_type=1
+ORDER BY acct_no,mod_dt
+
+),
+
+last_pender_date as (
+
+SELECT acct_no,status,detail,type_code,mod_dt_adj as last_pender_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt_adj desc) as last_pender_type
+
+    FROM status_hist sh
+
+    WHERE type_code='P' )a
+    
+where last_pender_type=1
+ORDER BY acct_no,mod_dt
+
+),
+
+pender_due_date as (
+
+SELECT acct_no, substr(doc_type,1,2) as dp, open_date as pender_due_date
+FROM (
+    select mop.*,
+    RANK() OVER (Partition by mop.acct_no ORDER BY open_date desc) as max_open_date
+
+    from mort.mropenp mop,
+    mort.mrcontp mc
+
+    where mop.acct_no = mc.acct_no
+    AND mkt_src='5120800'
+    AND substr(doc_type,1,2)='DP'
+
+    ORDER BY mop.acct_no
+) a 
+
+WHERE max_open_date=1
+),
+
+first_good_date as ( 
+
+SELECT acct_no,status,detail,type_code,mod_dt_adj as first_good_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt_adj asc) as first_good_type
+
+    FROM status_hist sh
+
+    WHERE type_code='G' )a
+    
+where first_good_type=1
+ORDER BY acct_no,mod_dt
+
+),
+
+last_good_date as (
+SELECT acct_no,status,detail,type_code,mod_dt_adj as last_good_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt_adj desc) as last_good_type
+
+    FROM status_hist sh
+
+    WHERE type_code='G' 
+    )a
+    
+where last_good_type=1
+ORDER BY acct_no,mod_dt
+),
+
+first_res_date as(
+
+SELECT acct_no,status,detail,type_code,mod_dt_adj as first_res_date
+
+FROM (
+    SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt_adj asc) as first_res
+    FROM status_hist sh
+    
+    WHERE status IN ('X') OR detail='WR'
+    )a
+WHERE first_res=1
+
+)
+
+
+-- good biz date= min type date where type is good
+-- in good biz calc = if good biz date is between the first of the reporting month and the 15th of the following. 
+SELECT 
+DISTINCT b.*, first_good_date,first_res_date,last_good_date, first_pender_date, TRUNC(sales_effort_date) as tour_date, 
+pender_due_date,
+
+--If contract is good and the tour happened before the reporting start then don't include. 
+CASE WHEN first_good_date IS NOT NULL and first_pender_date is null AND tour_date<reporting_start THEN 'Exclude' 
+WHEN first_good_date is not null and first_pender_date>first_good_date AND tour_date<reporting_start THEN 'Exclude' 
+WHEN (b.status='X' OR b.detail='WR') AND tour_date<reporting_start THEN 'Exclude'
+ELSE 'Include' END as filter_out,
+
+CASE 
+WHEN b.status='X' OR b.detail='WR' THEN 'Cancel'
+WHEN first_good_date is not null and first_pender_date<first_good_date THEN 'Pender to Good'
+WHEN first_good_date is not null and first_pender_date>first_good_date THEN 'Good to Pender'
+WHEN first_good_date IS NOT NULL and first_pender_date is null THEN 'Good' 
+WHEN first_good_date is null and first_pender_date is not null THEN 'Pender' 
+ELSE null END as Contr_status
+
+
+--TRUNC(contr_date)-first_good_date
+--, max(TRUNC(contr_date)-first_good_date), min(TRUNC(contr_date)-first_good_date)
+
+
+From base b
+LEFT JOIN first_good_date fgd ON fgd.acct_no=b.acct_no
+LEFT JOIN first_res_date frd ON frd.acct_no=b.acct_no
+LEFT JOIN last_good_date lgd ON lgd.acct_no=b.acct_no
+LEFT JOIN first_pender_date fpd ON fpd.acct_no=b.acct_no
+LEFT JOIN pender_due_date pdd ON pdd.acct_no=b.acct_no
+
+
+
+
+ORDER by sales_effort_date desc
