@@ -7,13 +7,6 @@
             <div id="branding">
                 <h1>Morgan Wunder - Data Analytics Portfolio</h1>
             </div>
-            <nav>
-                <ul>
-                    <li><a href="#about">Professional Experience</a></li>
-                    <li><a href="#projects">Project Highlights</a></li>
-                    <li><a href="#contact">Contact</a></li>
-                </ul>
-            </nav>
         </div>
     </header>
 
