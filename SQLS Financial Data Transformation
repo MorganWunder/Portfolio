@@ -1,0 +1,671 @@
+
+
+
+-- Get scope of data transfer and load temp
+
+declare @Accounting_Period_Start date;
+declare @Accounting_Period_End date;
+declare @Scenario nvarchar(25);
+declare @Scenario_Version nvarchar(25);
+
+
+set @Accounting_Period_Start    = '1/1/25'
+set @Accounting_Period_End      = '12/1/26'
+
+set @Scenario                   = 'Actual'          -- Forecast
+set @Scenario_Version           = 'Actual'  -- Working Forecast
+
+
+
+
+IF OBJECT_ID('tempdb..#data') IS NOT NULL 
+DROP TABLE #data;
+
+select * into #data from (
+select  *
+from    Finance.FS.Ledger_Detail
+where   scenario = @Scenario
+        and Scenario_Version = @Scenario_Version
+        and accounting_period between @Accounting_Period_Start and @Accounting_Period_End
+        
+
+        /*
+        ((Accounting_Year >= 2025 and Scenario in ('Actual')) 
+        or (Accounting_Year = 2026 and Scenario = 'Forecast' and Scenario_Version = 'Final (3+9)')
+        or (Accounting_Year = 2026 and Scenario = 'Budget' and Scenario_Version = '2026 Final')
+        )
+        and Current_Amount <> 0
+        and ((pl.Tier1_Stmt_Vw1_Descr = 'Default Mgmt P&L' and pl.Tier1_Vw1_Descr_L2= 'Rental/Resort Profit (Loss)') or (pl.Tier2_Stmt_Vw2_Descr= 'Resorts Net Contribution Report'))
+
+        */
+
+) t
+
+
+-- If running budget 2026, Attrition is included in denominator.  Use below mapping table:
+
+
+IF OBJECT_ID('tempdb..#Budget_Benefits_Map') IS NOT NULL 
+DROP TABLE #Budget_Benefits_Map;
+
+create table #Budget_Benefits_Map (
+Pay_Bene_Leaf nvarchar(250) null,
+Account_Code nvarchar(250) null
+);
+
+insert into #Budget_Benefits_Map (Pay_Bene_Leaf, Account_Code)
+values
+('Fringe Benefits - Forecast Rate',	'4221002'),
+('401k Employer - Forecast Rate',	'4224001'),
+('Workers Comp - Forecast Rate',	'4226001'),
+('FICA/Medicare - Forecast Rate',	'4227001'),
+('Federal Unemployment - Forecast Rate',	'4228001'),
+('State Unemployment - Forecast Rate',	'4229001'),
+('Payroll-Total',	'4211001'),
+('Payroll-Total',	'4213001'),
+('Payroll-Total',	'4220001'),
+('Payroll-Total',	'4220003'),
+('Payroll-Total',	'4214601');
+
+
+--select * from #Budget_Benefits_Map map
+--	left join finance.fs_ref.t004_account_reclass a
+--		on map.account_code = a.account_code
+--order by map.account_code
+
+
+
+-- calculate the rates and insert as new records
+-- group by company after merge, location, and department
+-- project_Code for these is "Company Merge Actual Data"
+
+
+IF OBJECT_ID('tempdb..#rates') IS NOT NULL 
+DROP TABLE #rates;
+
+select * into #rates from (
+
+select  ld.accounting_period
+        , map.Merge_Company_Code  --Use an if to look for all the company codes if merge company is null 
+        , map.Merge_Location_Code -- "" 
+        , ld.Department_Code
+        , convert(numeric(30,10) ,sum(iif(iif(@Scenario = 'Budget',bud_ben.Pay_Bene_Leaf,ben.Pay_Bene_Leaf) = 'Payroll-Total', Current_Amount, 0.000000))) as Payroll_Total_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'Fringe Benefits - Forecast Rate', Current_Amount, 0.000000))) as Fringe_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = '401k Employer - Forecast Rate', Current_Amount, 0.000000))) as Ret_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'Workers Comp - Forecast Rate', Current_Amount, 0.000000))) as Work_Comp_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'FICA/Medicare - Forecast Rate', Current_Amount, 0.000000))) as FICA_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'Federal Unemployment - Forecast Rate', Current_Amount, 0.000000))) as Fed_Unemp_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'State Unemployment - Forecast Rate', Current_Amount, 0.000000))) as State_Unemp_Amount
+from    #data ld
+
+        left join Finance.FS_Ref.T000_R_Code_Ref_Descr map
+            on ld.Consol_HOA_Company_Code = map.R_Code
+            and map.Active_Flag = 1
+
+        left join dev_fpa.fs_ref.benefits_mapping ben
+            on ld.Account_Code = ben.Account_Code
+
+        left join #Budget_Benefits_Map bud_ben
+            on ld.Account_Code = bud_ben.Account_Code
+
+where   ld.account_code in (4221002,4224001,4226001,4227001,4228001,4229001,4211001,4213001,4220001,4220003,4214601)
+        and Consol_HOA_Company_Code_and_Descr is not null and map.Merge_Company_Code is not null
+
+group by ld.accounting_period
+        , map.Merge_Company_Code
+        , map.Merge_Location_Code
+        , ld.Department_Code
+
+
+UNION 
+
+select ld.accounting_period
+        , ld.Company_Code as Merge_company_code
+        , ld.Location_Code as merge_location_code
+        , ld.Department_Code
+        , convert(numeric(30,10) ,sum(iif(iif(@Scenario = 'Budget',bud_ben.Pay_Bene_Leaf,ben.Pay_Bene_Leaf) = 'Payroll-Total', Current_Amount, 0.000000))) as Payroll_Total_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'Fringe Benefits - Forecast Rate', Current_Amount, 0.000000))) as Fringe_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = '401k Employer - Forecast Rate', Current_Amount, 0.000000))) as Ret_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'Workers Comp - Forecast Rate', Current_Amount, 0.000000))) as Work_Comp_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'FICA/Medicare - Forecast Rate', Current_Amount, 0.000000))) as FICA_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'Federal Unemployment - Forecast Rate', Current_Amount, 0.000000))) as Fed_Unemp_Amount
+        , convert(numeric(30,10) ,sum(iif(ben.Pay_Bene_Leaf = 'State Unemployment - Forecast Rate', Current_Amount, 0.000000))) as State_Unemp_Amount
+from    #data ld
+
+        left join dev_fpa.fs_ref.benefits_mapping ben  --For Actuals 
+            on ld.Account_Code = ben.Account_Code
+
+        left join #Budget_Benefits_Map bud_ben    -- For Budget 
+            on ld.Account_Code = bud_ben.Account_Code
+
+-- Had to change this side to look for nvarchar values instad of INT. 
+where  ld.account_code in (N'4221002', N'4224001', N'4226001', N'4227001',N'4228001', N'4229001', N'4211001', N'4213001',N'4220001', N'4220003', N'4214601') 
+        and Consol_HOA_Company_Code_and_Descr is null 
+
+group by ld.accounting_period
+        , ld.company_code
+        , ld.location_code
+        , ld.Department_Code
+
+) r
+
+--select * from Finance.FS_Ref.T000_R_Code_Ref_Descr
+
+
+IF OBJECT_ID('tempdb..#create_recs') IS NOT NULL 
+DROP TABLE #create_recs;
+
+select * into #create_recs from (
+select  Accounting_Period
+        , Merge_Company_Code
+        , Merge_Location_Code
+        , Department_Code
+        , 'Fringe Benefits - Forecast Rate' as Account_Code
+        --, 'Company Merge Actual Data' as Project_Code
+        , '000' as Project_Code
+        , 'ICDefault' as Intercompany_Code
+        , '00000' as Future_Code
+        , 'STAT' as Currency
+        , convert(numeric(30,10) ,Fringe_Amount/iif(Payroll_Total_Amount = 0, 1.000000, Payroll_Total_Amount)) as Amount
+        , @Scenario as Scenario
+        , @Scenario_Version as Scenario_Version
+        , year(accounting_period) as Accounting_Year
+        , month(accounting_period) as Accounting_Month
+from    #rates r
+
+union
+
+
+select  Accounting_Period
+        , Merge_Company_Code
+        , Merge_Location_Code
+        , Department_Code
+        , '401k Employer - Forecast Rate' as Account_Code
+        --, 'Company Merge Actual Data' as Project_Code
+        , '000' as Project_Code
+        , 'ICDefault' as Intercompany_Code
+        , '00000' as Future_Code
+        , 'STAT' as Currency
+        , convert(numeric(30,10) ,Ret_Amount/iif(Payroll_Total_Amount = 0, 1.000000, Payroll_Total_Amount)) as Amount
+        , @Scenario as Scenario
+        , @Scenario_Version as Scenario_Version
+        , year(accounting_period) as Accounting_Year
+        , month(accounting_period) as Accounting_Month
+from    #rates r
+
+union
+
+
+select  Accounting_Period
+        , Merge_Company_Code
+        , Merge_Location_Code
+        , Department_Code
+        , 'Workers Comp - Forecast Rate' as Account_Code
+        --, 'Company Merge Actual Data' as Project_Code
+        , '000' as Project_Code
+        , 'ICDefault' as Intercompany_Code
+        , '00000' as Future_Code
+        , 'STAT' as Currency
+        , convert(numeric(30,10) ,Work_Comp_Amount/iif(Payroll_Total_Amount = 0, 1.000000, Payroll_Total_Amount)) as Amount
+        , @Scenario as Scenario
+        , @Scenario_Version as Scenario_Version
+        , year(accounting_period) as Accounting_Year
+        , month(accounting_period) as Accounting_Month
+from    #rates r
+
+
+union
+
+
+select  Accounting_Period
+        , Merge_Company_Code
+        , Merge_Location_Code
+        , Department_Code
+        , 'FICA/Medicare - Forecast Rate' as Account_Code
+        --, 'Company Merge Actual Data' as Project_Code
+        , '000' as Project_Code
+        , 'ICDefault' as Intercompany_Code
+        , '00000' as Future_Code
+        , 'STAT' as Currency
+        , convert(numeric(30,10) ,FICA_Amount/iif(Payroll_Total_Amount = 0, 1.000000, Payroll_Total_Amount)) as Amount
+        , @Scenario as Scenario
+        , @Scenario_Version as Scenario_Version
+        , year(accounting_period) as Accounting_Year
+        , month(accounting_period) as Accounting_Month
+from    #rates r
+
+union
+
+select  Accounting_Period
+        , Merge_Company_Code
+        , Merge_Location_Code
+        , Department_Code
+        , 'Federal Unemployment - Forecast Rate' as Account_Code
+        --, 'Company Merge Actual Data' as Project_Code
+        , '000' as Project_Code
+        , 'ICDefault' as Intercompany_Code
+        , '00000' as Future_Code
+        , 'STAT' as Currency
+        , convert(numeric(30,10) ,Fed_Unemp_Amount/iif(Payroll_Total_Amount = 0, 1.000000, Payroll_Total_Amount)) as Amount
+        , @Scenario as Scenario
+        , @Scenario_Version as Scenario_Version
+        , year(accounting_period) as Accounting_Year
+        , month(accounting_period) as Accounting_Month
+from    #rates r
+
+union
+
+select  Accounting_Period
+        , Merge_Company_Code
+        , Merge_Location_Code
+        , Department_Code
+        , 'State Unemployment - Forecast Rate' as Account_Code
+        --, 'Company Merge Actual Data' as Project_Code
+        , '000' as Project_Code
+        , 'ICDefault' as Intercompany_Code
+        , '00000' as Future_Code
+        , 'STAT' as Currency
+        , convert(numeric(30,10) ,State_Unemp_Amount/iif(Payroll_Total_Amount = 0, 1.000000, Payroll_Total_Amount)) as Amount
+        , @Scenario as Scenario
+        , @Scenario_Version as Scenario_Version
+        , year(accounting_period) as Accounting_Year
+        , month(accounting_period) as Accounting_Month
+from    #rates r
+
+) c
+
+
+
+--select * from #create_recs
+
+-------------- Get Occupancy from 5141 and duplicate it in 5050
+IF OBJECT_ID('tempdb..#occup') IS NOT NULL 
+DROP TABLE #occup;
+
+select  
+        map.Merge_Company_Code as Company_Code  ------------------- need to do isnull situation
+        , map.Merge_Location_Code as Location_Code
+        , pl.Department_Code
+        , pl.Account_Code
+        , convert(nvarchar(50), pl.Project_Code) as Project_Code
+        , pl.Trading_Partner as Intercompany_Code
+        , convert(numeric(30,10) ,sum(pl.Current_Amount)) as Amount
+        , pl.Accounting_Year
+        , pl.Accounting_Month
+        , pl.Scenario
+        , pl.Scenario_Version
+
+into #occup
+from #data pl
+        left join finance.fs_ref.T004_Account_Reclass acct
+            on pl.Account_Code = acct.Account_Code
+
+        left join Finance.FS_Ref.T000_R_Code_Ref_Descr map
+            on pl.Consol_HOA_Company_Code = map.R_Code
+            and map.Active_Flag = 1
+
+where pl.department_code = '5141'
+        and acct.L8_Account_Descr = '930001P-Total Occupied Room Nights'
+        and map.Merge_Company_Code is not null
+group by map.Merge_Company_Code 
+        , map.Merge_Location_Code 
+        , pl.Department_Code
+        , pl.Account_Code
+        , convert(nvarchar(50), pl.Project_Code)
+        , pl.Trading_Partner
+        , pl.Accounting_Year
+        , pl.Accounting_Month
+        , pl.Scenario
+        , pl.Scenario_Version
+
+update #occup
+set Department_Code = '5050', Project_Code = 'Company Merge Actual Data'
+;
+-------------- Get Occupancy from 5050 and 00372 and loc 2200 and dup into 00365 and 2800
+IF OBJECT_ID('tempdb..#occup_villas') IS NOT NULL 
+DROP TABLE #occup_villas;
+
+select * 
+into #occup_villas
+from #occup
+where Company_Code = '00372' and Location_Code = '2200'
+;
+
+update #occup_villas
+set Company_Code = '00365', Location_Code = '2800'
+from #occup_villas
+;
+
+insert into #occup
+select * from #occup_villas
+;
+
+---------------------------------------------------------------------------------------------------------------------------
+
+-- New additions to Original Query done by Morgan. 
+-- For Rev POR, Perc of Rev, and COGs Perc of Assocaited Rev Calcs.
+
+---------------------------------------------------------------------------------------------------------------------------
+
+IF OBJECT_ID('tempdb..#FB_Rev_COGs') IS NOT NULL 
+DROP TABLE #FB_Rev_COGs;
+
+create table #FB_Rev_COGs (
+COGS_acct nvarchar(250) null,
+COGS_desc varchar(250) null,
+Revenue_acct nvarchar(250) null,
+Revenue_desc varchar(250) null,
+Join_order INT,
+COGS_perc_of_rev nvarchar(250) null,
+Rev_perc_of_rev varchar(250) null
+);
+insert into #FB_Rev_COGs (COGS_acct,COGS_desc, Revenue_acct,Revenue_desc, join_order, COGS_perc_of_rev,Rev_perc_of_rev)
+VALUES
+('4111010', 'Food Expense', '3300040', 'Food Sales', 2, 'Food Expense COGS Perc', 'Food Sales Perc of Rev'),
+('4111019', 'Gift/Souvenir Supplies', '3402084', 'Gift/Souvenir Revenues', 3, 'Gift/Souvenir Supplies COGS Perc', 'Gift/Souvenir Revenues Perc of Rev'),
+('4111020', 'Beverage Expense COGS', '3300050', 'Beverage Sales', 4, 'Beverage Expense COGS Perc', 'Beverage Sales Perc of Rev'),
+('4111024', 'Sports Equipment', NULL, NULL, 5, 'Sports Equipment COGS Perc', NULL),
+('4111025', 'Bikes and Boats Supplies/Equipment', NULL, NULL, 6, 'Bikes and Boats Supplies/Equipment COGS Perc', NULL),
+('4111027', 'Grocery Cost of Sale', '3402089', 'Grocery Revenue', 7, 'Grocery Cost of Sale COGS Perc', 'Grocery Revenue Perc of Rev'),
+('4111031', 'Skeet Expense', '3402092', 'Combo Skeet Revenue', 8, 'Skeet Expense COGS Perc', 'Combo Skeet Revenue Perc of Rev'),
+('4111054', 'Special Events- Supplies', '3301280', 'Special Events- Misc Revenue', 9, 'Special Events- Supplies COGS Perc', 'Special Events- Misc Revenue Perc of Rev'),
+('4111056', 'Fuel Expense', '3402073', 'Fuel Revenue', 10, 'Fuel Expense COGS Perc', 'Fuel Revenue Perc of Rev'),
+('4111059', 'Food Costs- Corp Cafeteria', NULL, NULL, 11, 'Grocery Cost of Sale COGS Perc', NULL),
+(NULL, NULL, '3300005', 'Interest Income', NULL, NULL, 'Interest Income Perc of Rev'),
+(NULL, NULL, '3300120', 'Sundry Sales', NULL, NULL, 'Sundry Sales Perc of Rev'),
+(NULL, NULL, '3300150', 'Equipment Rental Revenue', NULL, NULL, 'Equipment Rental Revenue Perc of Rev'),
+(NULL, NULL, '3300615', 'Rent Income', NULL, NULL, 'Rent Income Perc of Rev'),
+(NULL, NULL, '3400002', 'Other', NULL, NULL, 'Other Perc of Rev'),
+(NULL, NULL, '3400120', 'Spa Sundry Sales', NULL, NULL, 'Spa Sundry Sales Perc of Rev'),
+(NULL, NULL, '3402010', 'Attraction Tickets', NULL, NULL, 'Attraction Tickets Perc of Rev'),
+(NULL, NULL, '3402074', 'Stables Stall Rental Revenue', NULL, NULL, 'Stables Stall Rental Revenue Perc of Rev'),
+(NULL, NULL, '3402075', 'Rental Income - Other', NULL, NULL, 'Rental Income-Other Perc of Rev'),
+(NULL, NULL, '3402077', 'Ride Revenue', NULL, NULL, 'Ride Revenue Perc of Rev'),
+(NULL, NULL, '3402080', 'Admission', NULL, NULL, 'Admission Perc of Rev'),
+(NULL, NULL, '3402085', 'ATM Revenues', NULL, NULL, 'ATM Revenues Perc of Rev'),
+(NULL, NULL, '3402087', 'Video Game Revenues', NULL, NULL, 'Video Game Revenues Perc of Rev'),
+(NULL, NULL, '3402091', 'Merchandise Sales', NULL, NULL, 'Merchandise Sales Perc of Rev'),
+(NULL, NULL, '3301050', 'Luxe Dining', NULL, NULL, 'Luxe Dining Perc of Rev'),
+(NULL, NULL, '3300045', 'Mini Mart Deli Sales', NULL, NULL, 'Mini Mart Deli Sales Perc of Rev'),
+(NULL, NULL, '3300047', 'Starbucks Sales', NULL, NULL, 'Starbucks Sales Perc of Rev'),
+(NULL, NULL, '3402117', 'Haunting of River Ranch Revenue', NULL, NULL, 'Haunting of River Ranch Revenue Perc of Rev'),
+(NULL, NULL, '3402128', 'Rodeo Sponsorship Revenue', NULL, NULL, 'Rodeo Sponsorship Revenue Perc of Rev'),
+(NULL, NULL, '3402130', 'Miscellaneous Inc', NULL, NULL, 'Miscellaneous Inc Perc of Rev'),
+(NULL, NULL, '3402133', 'Merchandise Sales', NULL, NULL, 'Merchandise Sales 2 Perc of Rev'),
+(NULL, NULL, '3402165', 'Meeting Room Rental', NULL, NULL, 'Meeting Room Rental Perc of Rev'),
+(NULL, NULL, '3403101', 'Spa Massage', NULL, NULL, 'Spa Massage Perc of Rev'),
+(NULL, NULL, '3403102', 'Spa Hair Service', NULL, NULL, 'Spa Hair Service Perc of Rev'),
+(NULL, NULL, '3403103', 'Spa Nail Service', NULL, NULL, 'Spa Nail Service Perc of Rev'),
+(NULL, NULL, '3403104', 'Spa Guest Fees', NULL, NULL, 'Spa Guest Fees Perc of Rev'),
+(NULL, NULL, '3403105', 'Spa Skin Care', NULL, NULL, 'Spa Skin Care Perc of Rev'),
+(NULL, NULL, '3403106', 'Spa Treatments', NULL, NULL, 'Spa Treatments Perc of Rev'),
+(NULL, NULL, '3403111', 'Spa Membership Charges', NULL, NULL, 'Spa Membership Charges Perc of Rev'),
+(NULL, NULL, '3403112', 'Spa Fitness Services', NULL, NULL, 'Spa Fitness Services Perc of Rev'),
+(NULL, NULL, '3402150', 'Commissions-Other', NULL, NULL, 'Commissions-Other Perc of Rev'),
+(NULL, NULL, '3402136', 'House Grat', NULL, NULL, 'House Grat Perc of Rev'),
+(NULL, NULL, '3400130', 'Activities Revenue', NULL, NULL, 'Activities Revenue Perc of Rev'),
+--(NULL, NULL, '3402165', 'Banquet Room Revenue', NULL, NULL, 'Banquet Room Revenue Perc of Rev'),
+(NULL, NULL, '3400147', 'Guest Parking Revenue', NULL, NULL, 'Guest Parking Revenue Perc of Rev'),
+(NULL, NULL, '3402118', 'Winter Wonderland Revenue', NULL, NULL, 'Winter Wonderland Revenue Perc of Rev'),
+(NULL, NULL, '3403502', 'Food Rev-Vending-Corp', NULL, NULL, 'Food Rev-Vending-Corp Perc of Rev')
+;
+
+-- Temp Table for Total Revenue
+IF OBJECT_ID('tempdb..#FB_Total_Rev') IS NOT NULL 
+DROP TABLE #FB_Total_Rev;
+
+
+SELECT ld.company_code,
+    ld.department_code,
+    ld.location_code, 
+    ld.Accounting_period,
+    ld.Accounting_Year,
+    ld.Accounting_Month,
+    SUM(ld.Current_Amount)*-1 as Total_Rev --Leave as a positive for the RevPOR calc later    
+
+INTO #FB_Total_Rev
+FROM #data ld 
+
+    Right join #FB_REV_COGs fb ON ld.account_code=fb.Revenue_acct
+
+WHERE ld.Company_Code IS NOT NULL 
+
+GROUP BY ld.company_code,
+    ld.department_code,
+    ld.location_code,
+    ld. Accounting_period,
+    ld.Accounting_Year,
+    ld.Accounting_Month
+;
+
+--Temp table for Percent of Total Revenue
+IF OBJECT_ID('tempdb..#FB_PercRev') IS NOT NULL 
+DROP TABLE #FB_PercRev;
+
+SELECT ld.company_code,
+        ld.department_code,
+        ld.location_code,
+        ld.account_code, 
+        fb.join_order,
+        fb.Rev_perc_of_rev,
+        ld. Accounting_period,
+        ld.Accounting_Year,
+        ld.Accounting_Month,
+        (ld.Current_amount)*-1 as Rev_amt, 
+        tr.Total_Rev,
+        (ld.current_amount*-1)/ iif(Total_Rev=0,1.000000,Total_rev) as perc_of_rev_amt  --This needs to be positive because Total Rev is positive 
+
+            INTO #FB_PercRev
+            FROM  #data ld
+
+            RIGHT JOIN #FB_REV_COGs fb ON ld.account_code=fb.Revenue_acct
+
+             LEFT JOIN #fb_total_rev tr
+
+            ON tr.Company_Code= ld.company_code AND tr.Department_code=ld.department_code AND tr.Accounting_Period=ld.accounting_period
+
+            WHERE ld.Company_Code IS NOT NULL
+;
+-- Temp table for COGS Percent of Associated Rev 
+IF OBJECT_ID('tempdb..#FB_COGs_Perc') IS NOT NULL 
+DROP TABLE #FB_COGs_Perc;
+
+
+SELECT ld.Company_Code,
+    ld.Department_Code,
+    ld.location_code, 
+    ld.Accounting_Period,
+    ld.Accounting_Year,
+    ld.Accounting_Month, 
+    ld.Account_Code,
+    fb. COGS_desc,
+    fb.join_order, 
+    ld.Current_Amount as COGs_amt,
+    pr.Rev_amt,
+    fb.COGS_perc_of_rev,
+    ld.Current_Amount/iif(pr.Rev_amt=0,1.000000,pr.Rev_amt) as COGS_Perc
+
+INTO #FB_COGs_Perc
+FROM #data ld
+
+RIGHT JOIN #FB_REV_COGs fb ON ld.account_code=fb.COGS_acct
+
+LEFT JOIN #FB_PercRev pr
+
+ ON (ld.Company_Code=pr.company_code AND ld.Department_Code=pr.department_code AND ld.accounting_Period=pr.accounting_period and fb.join_order=pr.join_order)
+
+ WHERE ld.Company_Code IS NOT NULL ;
+
+
+
+ --Final Union to get full table
+
+select * from (
+
+select 
+-- upload format Morgan:
+        
+        -- pl.Company_Code
+        --, pl.Location_Code
+        --, pl.Department_Code
+        --, pl.Account_Code
+        --, pl.Project_Code
+        --, pl.Trading_Partner as Intercompany_Code
+        --, convert(numeric(30,10),pl.Current_Amount) as Amount
+        --, pl.Accounting_Year
+        --, pl.Accounting_Month
+        --, pl.Scenario
+        --, pl.Scenario_Version
+
+       
+
+-- end upload format^
+
+-- upload format Kenny:
+
+         pl.Account_Code as Account
+        , pl.Company_Code as Company
+        , pl.Location_Code as Location
+        , pl.Department_Code as Department
+        , pl.Project_Code as Project
+        , iif( pl.Intercompany_Code = '00000' , 'ICDefault', pl.Intercompany_Code) as Intercompany
+        , pl.Accounting_Year as FiscalYear
+        , format(pl.Accounting_Month,'00') as FiscalMonth
+        , convert(numeric(30,6),pl.Current_Amount) as Amount
+        
+        
+from #data pl
+    
+union
+
+select   
+-- upload format Morgan:
+        
+        -- pl.Merge_Company_Code as Company_Code
+        --, pl.Merge_Location_Code as  Location_Code
+        --, pl.Department_Code
+        --, pl.Account_Code
+        --, pl.Project_Code
+        --, pl.Intercompany_Code
+        --, convert(numeric(30,10),pl.Amount) as Amount
+        --, pl.Accounting_Year
+        --, pl.Accounting_Month
+        --, pl.Scenario
+        --, pl.Scenario_Version
+       
+
+-- end upload format^
+
+-- upload format Kenny:
+
+         pl.Account_Code as Account
+        , pl.Merge_Company_Code as Company
+        , pl.Merge_Location_Code as Location
+        , pl.Department_Code as Department
+        , pl.Project_Code as Project
+        , iif( pl.Intercompany_Code = '00000' , 'ICDefault', pl.Intercompany_Code) as Intercompany
+        , pl.Accounting_Year as FiscalYear
+        , format(pl.Accounting_Month,'00') as FiscalMonth
+        , convert(numeric(30,6),pl.Amount) as Amount
+
+
+from #create_recs pl
+
+
+union 
+
+select  
+        --pl.Company_Code
+        --, pl.Location_Code
+        --, pl.Department_Code
+        --, pl.Account_Code
+        --, pl.Project_Code
+        --, pl.Intercompany_Code
+        --, convert(numeric(30,10),pl.Amount) as Amount
+        --, pl.Accounting_Year
+        --, pl.Accounting_Month
+        --, pl.Scenario
+        --, pl.Scenario_Version
+
+        -- upload format Kenny:
+
+         pl.Account_Code as Account
+        , pl.Company_Code as Company
+        , pl.Location_Code as Location
+        , pl.Department_Code as Department
+        , pl.Project_Code as Project
+        , iif( pl.Intercompany_Code = '00000' , 'ICDefault', pl.Intercompany_Code) as Intercompany
+        , pl.Accounting_Year as FiscalYear
+        , format(pl.Accounting_Month,'00') as FiscalMonth
+        , convert(numeric(30,6),pl.Amount) as Amount
+
+from    #occup pl
+
+UNION
+
+--Revenue Per Occupied Room (Rev POR)
+SELECT 
+    'Revenue POR' as Account, -- Account
+    tr.company_code as Company, -- Company
+    tr.location_code as Location, --Location
+    tr.department_code as Department, --Dept
+    '000' as Project, --Project
+    'ICDefault' as Intercompany, --Intercompany
+    YEAR(tr.Accounting_Period) AS FiscalYear,
+    FORMAT(MONTH(tr.Accounting_Period), '00') AS FiscalMonth,
+    convert(numeric(30,6), tr.Total_Rev/a.occ_amt)*-1 Amount --Amount
+
+FROM #FB_Total_Rev tr
+LEFT JOIN 
+        (SELECT Location_Code,
+            Accounting_Month,
+            Accounting_Year,
+            SUM(amount) as occ_amt
+
+            FROM #occup 
+
+            GROUP BY 
+            Location_Code,
+            Accounting_Month,
+            Accounting_Year
+            ) a ON (tr.Location_Code=a.Location_Code AND tr.Accounting_Year=a.Accounting_Year AND tr.Accounting_Month=a.Accounting_Month)
+UNION
+
+--Percent of Total Revenue
+SELECT 
+  pr.Rev_perc_of_rev as Account, -- Account
+  pr.company_code as Company, -- Company
+  pr.location_code as Location, --Location
+  pr.department_code as Department, --Dept
+  '000' as Project, --Project
+  'ICDefault' as Intercompany, --Intercompany
+  pr.accounting_year as Fiscalyear,--Fiscal year
+  format(pr.Accounting_Month,'00') as FiscalMonth,--Fiscal month
+  convert(numeric(30,6), pr.perc_of_rev_amt) as Amount --Amount
+
+
+ FROM #FB_PercRev pr
+
+
+ UNION 
+
+ --Percent of COGs by Associated Rev 
+ SELECT 
+  cp.cogs_perc_of_rev as Account, -- Account
+  cp.company_code as Company, -- Company
+  cp.location_code as Location, --Location
+  cp.department_code as Department, --Dept
+  '000' as Project, --Project
+  'ICDefault' as Intercompany, --Intercompany
+  cp.accounting_year as Fiscalyear,--Fiscal year
+  format(cp.Accounting_Month,'00') as FiscalMonth,--Fiscal month
+  convert(numeric(30,6),cp.COGs_Perc) as Amount--Amount
+
+
+  FROM #FB_COGs_Perc cp
+
+
+
+) Result
+
+where Amount <> 0
