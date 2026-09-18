@@ -20,7 +20,6 @@
     </section>
 </body>
 -->
-  
 <body>
     <section id="about" class="content">
         <div class="container">
@@ -29,6 +28,7 @@
             </p>
             <p>   
             I love creating complex SQL queries that allow the user to easily identify what the database can be used for.  </p>
+            <p> If you think I could be a good fit for your next project, you can reach me at <a href="mailto:wundermorgan@yahoo.com">wundermorgan@yahoo.com</a> or connect with me on <a href="https://www.linkedin.com/in/morgan-wunder">LinkedIn</a>.</p>
         </div>
     </section>
 </body>
@@ -43,13 +43,5 @@
             </ul>
         </div>
     </section>
-<body>
-    <section id="contact" class="content">
-        <div class="container">
-            <h2>Contact</h2>
-            <p> If you think I could be a good fit for your next project, you can reach me at <a href="mailto:wundermorgan@yahoo.com">wundermorgan@yahoo.com</a> or connect with me on <a href="https://www.linkedin.com/in/morgan-wunder">LinkedIn</a>.</p>
-        </div>
-    </section>
-</body>
 </html>
 
