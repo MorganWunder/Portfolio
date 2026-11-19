@@ -1,0 +1,653 @@
+-- SQL Code edited to run faster using ANSI joins rather then Cartesian Joins, simplifiying pulls, and removing duplicate table pulls. 
+
+
+with MCP as( 
+SELECT 
+* FROM mort.Mrcontp),
+
+MRP as (
+SELECT * FROM mort.MRMASTERP),
+
+AC as (
+SELECT * FROM common.alcomm) 
+
+
+
+SELECT /*+ PARALLEL(MRP 4) PARALLEL(MCP 4) PARALLEL(ALN 4) PARALLEL(AGE 4) PARALLEL(MORT.TRADE 4) PARALLEL(MTPAYHIST 4) */
+		DISTINCT
+		tqxDefaultReport_1.AcctNo AS Account,
+		tqxDefaultReport_1.LST_NAME AS Name, 
+		tqxDefaultReport_1.CONTR_DATE AS "Contract Dt",
+		tqxDefaultReport_1.CONTR_SITE_ORIG AS "Site Orig",
+		tqxDefaultReport_1.LOC_CODE AS "Loc Code",
+		tqxDefaultReport_1.STATUS AS Status_,
+		tqxDefaultReport_1.DETAILX AS Detail_,
+		tqxDefaultReport_1.Type_Code AS "Type",
+		tqxDefaultReport_1.DP_DELQ_DAYS AS "DP Age",
+		tqxDefaultReport_1.MORT_DELQ_DAYS AS "Mort Age",
+		tqxDefaultReport_1.DEED_STATUS AS "Deed Stat",
+        tqxDefaultReport_1.line as Line_Origin,
+		tqxDefaultReport_1.Collection_Status AS Flag, 
+		tqxDefaultReport_1.Flag_Date, 
+		tqxDefaultReport_1.Collection_MT_Status AS "MT Flag",
+		CASE WHEN  tqxDefaultReport_1.MAILOUT_RCVD_DT Is Null THEN tqxDefaultReport_1.MO_Code ELSE Null END  AS "MO Code",
+		tqxDefaultReport_1.DP_DT_LAST_PAID AS "DP Lst Pd", 
+		tqxDefaultReport_1.MORT_DT_LAST_PAID AS "Mort Lst Pd",
+		tqxDefaultReport_1.LAST_COMM46_DATE AS COMM46_DATE,
+		tqxDefaultReport_1.COMMENT46_USER_ID AS COMMENT46_USERID, 
+		tqxDefaultReport_1.LAST_COMM85_DATE AS COMM85_DATE, 
+        tqxDefaultReport_1.LAST_COMMENT46 AS COMMENT46, 
+		tqxDefaultReport_1.LAST_COMMENT85 AS COMMENT85, 
+		tqxDefaultReport_1.COMMENT85_USER_ID AS COMMENT85_USERID,
+        tqxDefaultReport_1.LAST_COMM55_DATE AS COMM55_DATE,
+		tqxDefaultReport_1.COMMENT55_USER_ID AS COMMENT55_USERID, 
+        tqxDefaultReport_1.LAST_COMMENT55 AS COMMENT55, 
+		tqxDefaultReport_1.LAST_COMM01_DATE AS COMM01_DATE, 
+		tqxDefaultReport_1.LAST_COMMENT01 AS COMMENT01, 
+		tqxDefaultReport_1.COMMENT01_USER_ID AS COMMENT01_USERID, 
+		tqxDefaultReport_1.Post_Date AS "Postdated?",
+		tqxDefaultReport_1.NextPaymentDate AS "Next Pstdt",
+		tqxDefaultReport_1.CONTR_ORIG AS Deal, 
+		tqxDefaultReport_1.Trade_From_Acct AS "Traded Acct", 
+        tqxDefaultReport_1.TRADE_FROM_CONTR_ORIG AS "Trade From Contract Origin",
+        tqxDefaultReport_1."Trade Type Code",
+		tqxDefaultReport_1.Trade_From_Deed_Stat AS "Traded Deed Stat", 
+        tqxDefaultReport_1.LEASEE as "Trade_LEASE",
+        tqxDefaultReport_1.CONTRACT_TYPE as "Trade_Contract_type",
+        tqxDefaultReport_1.TSTATUS as "Trade_Status",
+        tqxDefaultReport_1.TDETAIL as "Trade_Detail",        
+		tqxDefaultReport_1.QCD_Obtained AS "Have QCD?",
+		tqxDefaultReport_1.QCD_Recorded_Date AS "QCD Recorded Dt",
+		CASE WHEN tqxDefaultReport_1.Cntr Is Null THEN Null ELSE '*****' END  AS "Mult From",
+		tqxDefaultReport_1.SCHEDULE_PAYMENT_DATE,
+		tqxDefaultReport_1.SCHEDULE_PAYMENT_AMOUNT, 
+		tqxDefaultReport_1.PAYMENT_STATUS, 
+		tqxDefaultReport_1.NEXT_PAYMENT_DATE, 
+		tqxDefaultReport_1.Possible_Tab_4,
+
+		CASE WHEN (
+		SELECT
+				MAX(INV.acct_no) AS ACCT_NO
+		FROM
+				MCP 
+				LEFT JOIN MORT.MRWEEKP WP ON MCP.ACCT_NO=WP.ACCT_NO
+				LEFT JOIN 
+							MASTER.TIINVEN INV ON 
+                            MCP.LOC_CODE=INV.LOC_CODE AND
+							WP.BLDG=INV.BLDG AND
+							WP.UNIT=INV.UNIT AND
+							NVL(WP.SUB_UNIT,'-')=NVL(INV.SUB_UNIT,'-') AND
+							WP.WEEK=INV.WEEK
+		WHERE
+
+				tqxDefaultReport_1.Trade_From_Acct=MCP.ACCT_NO and
+				nvl(INV.acct_no,0)<>MCP.ACCT_NO		  and
+				nvl(INV.acct_no,0)<>tqxDefaultReport_1.Trade_From_Acct and
+				(WP.Ownership_Time = 'W'  OR
+                ((WP.Ownership_Time = 'E') and (INV.Time_Flg in ('E','W'))) or
+                ((WP.Ownership_Time = 'O') and (INV.Time_Flg in ('O','W'))))
+
+		) IS NOT NULL THEN 'Yes' ELSE NULL END AS "Inv Sold?",
+        
+        OTHER_ACCOUNTS.Matched_account,
+        OTHER_ACCOUNTS.Matched_SD,
+        OTHER_ACCOUNTS.Matched_DEED_STATUS,
+        OTHER_ACCOUNTS.Matched_CONTR_DATE,
+        tqxDefaultReport_1.LAST_MT_PAYMENT,
+        tqxDefaultReport_1.LAST_MT_PAYMENT_DATE,
+        tqxDefaultReport_1.LAST_MT_PAYMENT_DOC_TYPE
+------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+--END RESULT SELECT STATMENT ENDS HERE 
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+
+FROM
+
+		(SELECT /*+ PARALLEL(MRP 4) PARALLEL(MCP 4) PARALLEL(ALN 4) PARALLEL(AGE 4) */
+				DISTINCT    
+				MRP.ACCT_NO as AcctNo,    
+				ALN.LST_NAME,    
+				MRP.STATUS,    
+				MRP.DETAIL AS DETAILX,    
+				MRP.Type_Code,    
+				MRP.LEASE,
+                MCP.line,
+				--CASE WHEN 
+					--(AGE.MORT_DELQ_DAYS>=90 And MRP.Type_Code='P') OR (AGE.MORT_DELQ_DAYS>=30 And AGE.DP_DELQ_DAYS>=90 And MOP.DOC_TYP=1 and MCP.CONTR_ORIG<>'N' and  MRP.DEED_STATUS='N'	) ----------------Not sure if we need the second mrp2 here? 
+					--THEN  'Yes' ELSE 'No' END  AS Possible_Tab_1, 
+				--CASE WHEN AGE.MORT_DELQ_DAYS>=30  And AGE.DP_DELQ_DAYS>=90 And MOP.DOC_TYP =1 THEN 'Yes' ELSE 'No' END AS Possible_Tab_2, 
+				--CASE WHEN AGE.MORT_DELQ_DAYS>=180 OR (AGE.MORT_DELQ_DAYS>=120 and MCP.CONTR_ORIG<>'N' and  MRP.DEED_STATUS='N') THEN 'Yes' ELSE 'No' END AS Possible_Tab_3, 
+				-- REPLACED 120 days with 90 days in mortgage for good accounts -TAMIR
+                CASE WHEN AGE.MORT_DELQ_DAYS>=90 THEN 'Yes' ELSE 'No' END  AS Possible_Tab_4, --This seems to be the only one used of the possible_tab fields.
+				(SELECT MAX (CollHist.insert_date) from MORT.MRCOLLHIST CollHist where MRP.ACCT_NO=CollHist.acct_no and CollHist.type_coll in ('MO','B') )  AS Flag_Date,
+				CASE WHEN MRP.MAILOUT_RCVD_DT Is Null AND (CASE WHEN MRP.MAILOUT_CODE In ('102','103','104','105','116','134','146','147') Or (MRP.MAILOUT_CODE >='400' And MRP.MAILOUT_CODE <='499') THEN 'Yes' ELSE 'No' END)='Yes' THEN 'Yes' ELSE 'No' END AS Definite_MO_Exclusion,       -----------------This uses the base from possible_MO_Exclusion, move this outside of the inner query to use the same base 
+				CASE WHEN MCP.CONTR_ORIG='N' THEN 1 WHEN MCP.CONTR_ORIG='D'  THEN 2 WHEN MCP.CONTR_ORIG='E' THEN 3 WHEN MCP.CONTR_ORIG='U' THEN 4 ELSE 5 END  AS Contr_Orig_Sort_Order, 
+				MCP.CONT_TYP,    
+				AGE.DP_DELQ_DAYS,    
+				AGE.MORT_DELQ_DAYS,    
+				MRP.DEED_STATUS,    
+				MRP.Collection_Status,    
+				MRP.Collection_MT_Status,
+				TO_NUMBER(MRP.MAILOUT_CODE) AS MO_Code,
+				CASE WHEN MRP.MAILOUT_CODE In ('102','103','104','105','116','134','146','147') Or (MRP.MAILOUT_CODE >='400' And MRP.MAILOUT_CODE <='499') THEN 'Yes' ELSE 'No' END AS Possible_MO_Exclusion, 
+				MRP.MAILOUT_CODE,    
+				MRP.MAILOUT_SENT_DT,    
+				MRP.MAILOUT_RCVD_DT,    
+				AGE.DP_DT_LAST_PAID,    
+				AGE.MORT_DT_LAST_PAID,
+				CASE WHEN qxNextFuturePayment.NextPaymentDate Is Null THEN 'No' ELSE 'Yes'  END AS Post_Date, 
+				qxNextFuturePayment.NextPaymentDate, 
+				MCP.Last_Pymt_Date,    
+				MCP.Last_Due_Date,    
+				MCP.CONTR_ORIG, 
+				MOP.DOC_TYP AS Doc_Type_1,
+				MTR.FROM_ACCT_NO AS TRADE_FROM_ACCT,
+                MCP.CONTR_ORIG AS TRADE_FROM_CONTR_ORIG,     ----------------------Does this need to be the second one? 
+                MRP.TYPE_CODE as "Trade Type Code",
+				MRP.DEED_STATUS AS TRADE_FROM_DEED_STAT, 
+                MRP.LEASE as LEASEE,
+                MCP.contract_type as CONTRACT_TYPE,
+                MRP.STATUS as TSTATUS,
+                MRP.DETAIL as TDETAIL,
+				MCP.CONTR_DATE,    
+				MCP.CONTR_SITE_ORIG,    
+				MCP.LOC_CODE, 
+				B.LAST_COMM46_DATE,   
+				B.LAST_COMMENT46,   
+				B.COMMENT46_USER_ID,
+                B.LAST_COMM55_DATE,
+                B.LAST_COMMENT55,
+                B.COMMENT55_USER_ID,
+				B.LAST_COMM85_DATE,   
+				B.LAST_COMMENT85,   
+				B.COMMENT85_USER_ID,   
+				D.LAST_COMM01_DATE,   
+				D.LAST_COMMENT01,   
+				D.COMMENT01_USER_ID,   
+				E.Payment_Date as Schedule_Payment_Date,    
+				E.Payment_Amount as Schedule_Payment_Amount,    
+				F.Payment_Status as Payment_Status,    
+				F.Next_Payment_Date,
+				qtDocmtSetHistory.QCD_OBTAINEDX as QCD_Obtained_Raw,
+				qtDocmtSetHistory.QCD_RECORDED_DATEX as QCD_Recorded_Date_Raw,
+				CASE 	WHEN MRP.DEED_STATUS In ('D','R') THEN qtDocmtSetHistory.QCD_OBTAINEDX 
+						WHEN MRP.DEED_STATUS In ('E','S') THEN 'N/A' ELSE Null END AS QCD_Obtained,
+
+				CASE 	WHEN MRP.DEED_STATUS In ('D','R') THEN to_char(qtDocmtSetHistory.QCD_RECORDED_DATEX, 'MM/DD/YYYY')   
+						WHEN MRP.DEED_STATUS In ('E','S') THEN 'N/A' ELSE NULL END AS QCD_Recorded_Date,
+
+				qtDocmtSetHistory.ACCT_NO as qcd_acct_no,
+				tMortTrade_DupTo.CNTR,
+                MTPAYHIST.LAST_MT_PAYMENT,
+                MTPAYHIST.LAST_MT_PAYMENT_DATE,
+                MTPAYHIST.LAST_MT_PAYMENT_DOC_TYPE
+
+		FROM     
+				MRP,    ----CTE 
+				MCP,    ----CTE
+				COMMON.ALNAME          ALN,    
+				MORT.MR_AGING          AGE, 
+				-----------------------------   
+				(SELECT /*+ PARALLEL(MOP 4)*/
+						ACCT_NO,
+						MAX(CASE  WHEN SUBSTR(MOP.DOC_TYPE,1,2) = 'DP' THEN 1        WHEN SUBSTR(MOP.DOC_TYPE,1,1) = 'C'  THEN 1        WHEN SUBSTR(MOP.DOC_TYPE,1,1) = 'E'  THEN 1  ELSE 0      END ) AS DOC_TYP
+				 FROM       
+						MORT.MROPENP MOP
+				 GROUP BY
+						ACCT_NO
+				)MOP,    
+				-----------------------------
+				MORT.TRADE             MTR,    
+				--MRP        MRP2,            ----------------------------------- Why do we need mrmaster and contp twice? 
+                --MCP        MCP2,
+                ---------------------------
+				(SELECT 
+							DISTINCT    -- has to be distinct
+							ACCT_NO, 
+							'Yes' AS QCD_OBTAINEDX,
+							MAX(RECORDED_DATE) AS QCD_RECORDED_DATEX
+					FROM        
+							MORT.DOCMT_SET_HISTORY
+					WHERE       
+							DOCUMENT_TYPE_CODE = 'QCD' 
+
+                    GROUP BY    
+						ACCT_NO,
+						'Yes'
+				)qtDocmtSetHistory,
+				---------------------------
+				(   
+				SELECT                
+						ACCT_NO,
+						--46               
+						CASE WHEN REASON_CODE='46'  THEN MAX(COMM_DATE) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS LAST_COMM46_DATE,                
+						CASE WHEN REASON_CODE='46'  THEN MAX(COMMENT1) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS  LAST_COMMENT46,               
+						CASE WHEN REASON_CODE='46'  THEN MAX(USER_ID)  KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS COMMENT46_USER_ID,
+						-- 55     
+						CASE WHEN REASON_CODE='55' THEN MAX(COMM_DATE) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS LAST_COMM55_DATE, 
+						CASE WHEN REASON_CODE='55' THEN MAX(COMMENT1) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS  LAST_COMMENT55, 
+						CASE WHEN REASON_CODE='55' THEN MAX(USER_ID)  KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS COMMENT55_USER_ID,
+						--85
+						CASE WHEN REASON_CODE='85' THEN MAX(COMM_DATE) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS LAST_COMM85_DATE, 
+						CASE WHEN REASON_CODE='85' THEN MAX(COMMENT1) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS  LAST_COMMENT85, 
+						CASE WHEN REASON_CODE='85' THEN MAX(USER_ID)  KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) END AS COMMENT85_USER_ID
+						
+				FROM               
+						ALCOMM          
+                    WHERE reason_code IN ('46','55','85')
+                    AND comm_date>=sysdate-730
+				Group BY  ACCT_NO, REASON_CODE    
+				) B,
+       ------------------------------               
+/* ----Replaced with CASE statement above. 
+                (   
+				SELECT                
+						ACCT_NO,               
+						MAX(COMM_DATE) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS LAST_COMM55_DATE,                
+						MAX(COMMENT1) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS  LAST_COMMENT55,               
+						MAX(USER_ID)  KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS COMMENT55_USER_ID          
+				FROM               
+						ALCOMM          
+				WHERE               
+						REASON_CODE IN ('55')  AND                
+						COMM_DATE >= sysdate-730        
+				Group BY                ACCT_NO    
+				) B55, 
+				(
+				SELECT          
+						ACCT_NO,          
+						MAX(COMM_DATE) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS LAST_COMM85_DATE,          
+						MAX(COMMENT1) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS  LAST_COMMENT85,          
+						MAX(USER_ID) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS COMMENT85_USER_ID  
+				FROM         
+						COMMON.ALCOMM  
+				WHERE         
+						REASON_CODE IN ('85')  AND          
+						COMM_DATE >= sysdate-730
+				Group BY          ACCT_NO  
+				) C,
+*/				
+------------------------------------------------------
+                (select
+                ACCT_NO,
+                MAX(PYMT_AMT) KEEP (DENSE_RANK LAST ORDER BY PYMT_DATE ASC) AS LAST_MT_PAYMENT,
+                MAX(regexp_replace(DOC_TYPE, '[^[:alpha:]]','')) KEEP (DENSE_RANK LAST ORDER BY PYMT_DATE ASC) AS LAST_MT_PAYMENT_DOC_TYPE,
+                MAX(PYMT_DATE) KEEP (DENSE_RANK LAST ORDER BY PYMT_DATE ASC) AS LAST_MT_PAYMENT_DATE
+                from MTPAYHIST
+                where regexp_replace(DOC_TYPE, '[^[:alpha:]]','') in ('UT', 'U', 'M', 'T', 'MI', 'ML')
+                Group by ACCT_NO) MTPAYHIST,
+ -----------------------------------------------------               
+				( 
+				SELECT         
+						ACCT_NO,         
+						MAX(COMM_DATE) KEEP(DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS LAST_COMM01_DATE,         
+						MAX(COMMENT1) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS  LAST_COMMENT01,         
+						MAX(USER_ID) KEEP (DENSE_RANK LAST ORDER BY COMM_DATE ASC) AS COMMENT01_USER_ID 
+				FROM         
+						ALCOMM 
+				WHERE         
+						REASON_CODE IN ('01')  AND 
+						(
+						((INSTR(UPPER(COMMENT1),'LTR')>=1) 		and        
+						(( INSTR(UPPER(COMMENT1),'1ST')>=1) 	OR  
+						(INSTR(UPPER(COMMENT1),'2ND')>=1) 		OR 
+						(INSTR(UPPER(COMMENT1),'3RD')>=1) 		OR 
+						(INSTR(UPPER(COMMENT1),'4TH')>=1)))   	OR    
+						((INSTR(UPPER(COMMENT1),'CONTACT')>=1) 	and        
+						(( INSTR(UPPER(COMMENT1),'1ST')>=1) 	OR  
+						(INSTR(UPPER(COMMENT1),'2ND')>=1) 		OR 
+						(INSTR(UPPER(COMMENT1),'3RD')>=1) 		OR 
+						(INSTR(UPPER(COMMENT1),'4TH')>=1)))) 
+				Group BY             
+						ACCT_NO 
+				) D,
+-------------------------------------------------------
+				(
+				SELECT     
+						ACCT_NO,     
+						MIN(PAYMENT_DATE)KEEP (DENSE_RANK LAST ORDER BY  Payment_Date DESC) AS Payment_Date,      
+						MIN(PMT_AMT) KEEP (DENSE_RANK LAST ORDER BY  Payment_Date DESC) AS Payment_Amount  
+				FROM      
+						CREDIT.CC_FUTURE_PAYMENTS tFuture 
+				WHERE       
+						tFuture.PAYMENT_DATE>=trunc(sysdate) and     
+						tFuture.MT_Payment='N' 
+				Group BY      
+						ACCT_NO 
+				) E, 
+------------------------------------------------------------
+				(
+				SELECT      
+						ACCT_NO,      
+						MIN(STATUS) KEEP(DENSE_RANK LAST ORDER BY NEXT_PMT_DATE DESC) AS Payment_Status,      
+						MIN(NEXT_PMT_DATE) KEEP(DENSE_RANK LAST ORDER BY NEXT_PMT_DATE DESC) AS Next_Payment_Date  
+				FROM      
+						MORT.MR_RECURRING_PAYMENTS tRecurr 
+				Group BY  
+						tRecurr.ACCT_NO 
+				)F,
+--------------------------------------------------------------
+	(
+		SELECT ---------- This is from the total of the union 
+			Acct_No, 
+			MIN(NextPmtDate) AS NextPaymentDate
+				FROM 
+						(
+						SELECT -----These are what's being unioned 
+								Acct_No, 
+								CCorPBP, 
+								NextPmtDate, 
+								SumPmtAmt 
+						FROM 
+								(
+										SELECT          
+												CCT.Acct_ID as acct_no,
+												'PBP' as CCORPBP,
+												--CCT.INS_DATE, 
+												MIN(CCT.SCHED_DATE) as NextPmtDate, 
+												--CCT.INS_USER, 
+												--CCS.DESCRIPTION, 
+												--MRP.STATUS, 
+												--MRP.DETAIL, 
+												--MRP.COLLECTION_STATUS, 
+												--MRP.COLLECTION_MT_STATUS, 
+												--SUM(CCT.SURCHARGE) as SumSurcharge, 
+												SUM(CCT.AMOUNT) as SumPmtAmt
+
+									FROM        CREDIT.ECC_TRANSACTION  CCT, 
+												CREDIT.ECC_TRANS_STATUS CCS, 
+												MORT.MRMASTERP          MRP
+
+									WHERE           ( ( CCS.TRANS_STATUS = CCT.TRANS_STATUS ) 
+													AND   ( MRP.ACCT_NO      = CCT.ACCT_ID ) 
+													AND   ( CCS.DESCRIPTION  = 'Pending' ) 
+													AND   ( CCT.SCHED_DATE >= To_Date(To_Char(Current_Date,'mmddyyyy'),'mmddyyyy') ) )
+
+									GROUP BY    CCT.Acct_ID,
+                                                'PBP'
+
+										)qtEccTransaction
+				UNION ALL 
+
+						SELECT 
+								Acct_No, 
+								CCorPBP, 
+								NextPmtDate, 
+								SumPmtAmt 
+						FROM 
+										(
+										SELECT   
+												CFP.ACCT_NO, 
+												'CC' as CCorPBP,
+												MIN(CFP.PAYMENT_DATE) as NextPmtDate, 
+												--CFP.RECUR_STATUS, 
+												--CFP.INS_DATE, 
+												--CFP.INS_USER,
+												SUM(CFP.PMT_AMT) as SumPmtAmt,
+												count(*)
+
+										FROM        
+												CREDIT.CC_FUTURE_PAYMENTS CFP
+
+										WHERE  
+                                                ( CFP.RECUR_STATUS NOT IN ('4','5','6') ) 
+												--( ( CFP.RECUR_STATUS NOT IN ('4','5','6','9') )
+												--AND   ( CFP.PAYMENT_DATE >= To_Date(To_Char(Current_Date,'mmddyyyy'),'mmddyyyy') ) )
+
+										GROUP BY    CFP.ACCT_NO, 
+                                                     'CC'
+						)qtCcFuturePayments
+			)
+    GROUP BY acct_no
+										
+	)qxNextFuturePayment,
+	------------------------------------------------------------------
+				(
+				SELECT          
+						A.TO_ACCT_NO,
+						A.CNTR
+
+				FROM      
+				( 
+						SELECT          
+								TO_ACCT_NO,
+								COUNT(*) AS CNTR
+						FROM        
+								MORT.TRADE
+						GROUP BY    TO_ACCT_NO 
+						) A
+
+				WHERE       
+						A.CNTR > 1
+				)tMortTrade_DupTo
+----------------------------------------------------------
+
+		WHERE   
+				( MRP.ACCT_NO          = MCP.ACCT_NO )    AND  
+				( MRP.ACCT_NO          = ALN.ACCT_NO )    AND  
+				( MRP.ACCT_NO          = AGE.ACCT_NO(+) ) AND  
+				( MRP.ACCT_NO          = MOP.ACCT_NO(+) ) AND  
+                ( MRP.ACCT_NO          = MTPAYHIST.ACCT_NO(+)) AND
+				( ALN.PRIME_FLG        = 'Y' )            AND  
+				( MRP.DEED_STATUS     in ('E','S') )      AND  
+				( MRP.LEASE            = 'N')             AND  
+				( MRP.STATUS      not in ('X','T') )      AND  
+				( MRP.DETAIL      not in ('B','T') )      AND  
+				( MRP.ACCT_NO          = MTR.TO_ACCT_NO(+) ) AND  
+				--( MTR.FROM_ACCT_NO     = MRP2.ACCT_NO(+) )   AND
+                --(MTR.FROM_ACCT_NO      = MCP2.ACCT_NO(+) )   AND
+				( MRP.ACCT_NO          = B.ACCT_NO(+) )      AND 
+                --( MRP.ACCT_NO          = B55.ACCT_NO(+) )      AND 
+				--( MRP.ACCT_NO          = C.ACCT_NO(+) )      AND  
+				( MRP.ACCT_NO          = D.ACCT_NO(+) )      AND
+				( ( AGE.MORT_DELQ_DAYS >=  90 ) ) AND
+                
+                -- COMMENT OUT DP_DELQ_DAYS becasue we only looking at MORT_DELQ_DAYS for GOOD AND NOT NEW ACCOUNTS -TAMIR
+                -- ALSO CHANGED MORT_DELQ_DAYS to 90 Days rather than 30 -TAMIR
+                
+--                OR
+--				( AGE.DP_DELQ_DAYS >= 90 ) 
+				( MRP.ACCT_NO=E.ACCT_NO(+) ) AND
+				( MRP.ACCT_NO=F.ACCT_NO(+) )   AND
+				( MTR.FROM_ACCT_NO=qtDocmtSetHistory.ACCT_NO(+)) AND
+				( MRP.ACCT_NO=tMortTrade_DupTo.TO_ACCT_NO(+)) AND
+				( MRP.ACCT_NO=qxNextFuturePayment.ACCT_NO(+))
+				
+		 /* ORDER BY    
+				MRP.ACCT_NO,    
+				ALN.LST_NAME,    
+				MRP.STATUS,    
+				MRP.DETAIL,    
+				MRP.Type_Code,    
+				MRP.LEASE,    
+				MCP.CONT_TYP,    
+				AGE.DP_DELQ_DAYS,    
+				AGE.MORT_DELQ_DAYS,    
+				MRP.DEED_STATUS,    
+				MRP.Collection_Status,    
+				MRP.Collection_MT_Status,    
+				MRP.MAILOUT_CODE,    
+				MRP.MAILOUT_SENT_DT,    
+				MRP.MAILOUT_RCVD_DT,    
+				AGE.DP_DT_LAST_PAID,    
+				AGE.MORT_DT_LAST_PAID,    
+				MCP.Last_Pymt_Date,    
+				MCP.Last_Due_Date,    
+				MCP.CONTR_ORIG,   
+				MOP.DOC_TYP,                                     
+				MTR.FROM_ACCT_NO,    
+				MRP2.DEED_STATUS,
+                MRP2.LEASE
+                */
+		) tqxDefaultReport_1
+------------------------------------
+        
+                LEFT JOIN
+        -- NewInvent.Matched_Account and ACCT_NO(custom SQL Query)
+(SELECT 
+        RefInv.ACCT_NO,
+        /*
+        RefInv.SD,
+        RefInv.loc_code,
+        RefInv.BLDG,
+        RefInv.UNIT,
+        RefInv.SUB_UNIT,
+        RefInv.week,
+        RefInv.Time_Flag,
+        RefInv.OwnershipVal, */
+        MatchInv.ACCT_NO as Matched_account,
+        MatchInv.SD as Matched_SD,
+        --MatchInv.loc_code as Matched_Loc_code,
+        --MatchInv.BLDG as Matched_BLDG,
+        --MatchInv.UNIT as Matched_UNIT,
+        --MatchInv.SUB_UNIT as Matched_SUB_UNIT,
+        --MatchInv.week as Matched_week,
+        --MatchInv.OwnershipVal as matched_OwnershipVal,
+        --MatchInv.Time_Flag as Matched_Time_Flag,
+        MatchInv.DEED_STATUS as Matched_DEED_STATUS,
+        MatchInv.CONTR_DATE as Matched_CONTR_DATE
+        
+  from
+  (
+  select  
+          wk.acct_no,
+          mrp.status || mrp.detail as sd,
+          mcp.loc_code, 
+          wk.BLDG, 
+          wk.UNIT,
+          nvl(wk.SUB_UNIT,'99999') as SUB_UNIT, 
+          wk.week,
+           sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ) as OwnershipVal,
+          case 
+          when (sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ))=1 then 'Even'
+          when (sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ))=2 then 'Odd'
+           when (sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ))=3 then 'Whole'
+              else 'Undetermined' end as Time_Flag
+  from 
+          mort.mrweekp wk, 
+          mcp,
+          mrp
+          
+  where 
+          wk.acct_no=mcp.acct_no and 
+          mcp.acct_no=mrp.acct_no 
+          --wk.acct_no=33783377642
+          --wk.acct_no=73484454449
+          --and
+          --mp.status not in ('X','T') and
+          --mp.status || mp.detail not in ('CT','CQ')
+          
+  group by 
+          
+          mcp.loc_code, 
+          wk.BLDG, 
+          wk.UNIT,
+          nvl(wk.SUB_UNIT,'99999'), 
+          wk.week,
+          wk.acct_no,
+          mrp.status || mrp.detail
+          
+  )RefInv,
+  (
+  select  
+          wk.acct_no,
+          mrp.status || mrp.detail as sd,
+          mcp.loc_code, 
+          wk.BLDG, 
+          wk.UNIT,
+          nvl(wk.SUB_UNIT,'99999') as SUB_UNIT, 
+          wk.week,
+          mcp.CONTR_DATE,
+          mrp.DEED_STATUS,
+           sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ) as OwnershipVal,
+          case 
+          when (sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ))=1 then 'Even'
+          when (sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ))=2 then 'Odd'
+            when (sum( (case 
+               when wk.ownership_time='E' then 1
+               when wk.ownership_time='O' then 2
+               when wk.ownership_time='W' then 3
+               else 4 end)
+              ))=3 then 'Whole'
+              else 'Undetermined' end as Time_Flag
+  from 
+          mort.mrweekp wk, 
+          mcp,
+          mrp
+          
+  where 
+          wk.acct_no=mcp.acct_no and 
+          mcp.acct_no=mrp.acct_no and
+          mrp.status not in ('X','T') and
+          mrp.status || mrp.detail not in ('XQ','CLM','CQM','CT','CTU','CFM','CQ')
+          
+ group by 
+          
+          mcp.loc_code, 
+          wk.BLDG, 
+          wk.UNIT,
+          nvl(wk.SUB_UNIT,'99999'), 
+          wk.week,
+          wk.acct_no,
+          mrp.status || mrp.detail,
+          mcp.CONTR_DATE,
+          mrp.DEED_STATUS
+          
+  )MatchInv
+  
+  where
+      --RefInv.acct_no<>MatchInv.acct_no(+) and
+      RefInv.loc_code=MatchInv.loc_code(+)    and
+      RefInv.BLDG=MatchInv.BLDG(+)            and
+      RefInv.UNIT=MatchInv.UNIT(+)            and
+      RefInv.SUB_UNIT=MatchInv.SUB_UNIT(+)    and
+      RefInv.week=MatchInv.week (+)              and
+      (RefInv.OwnershipVal=MatchInv.OwnershipVal or MatchInv.OwnershipVal=3 or MatchInv.OwnershipVal is null or (RefInv.OwnershipVal=3 and MatchInv.OwnershipVal is not null))
+) OTHER_ACCOUNTS on OTHER_ACCOUNTS.ACCT_NO = tqxDefaultReport_1.acctno
+
+
+WHERE
+		(((tqxDefaultReport_1.Type_Code)<>'P') AND 
+		((tqxDefaultReport_1.CONTR_ORIG)<>'N') AND 
+		((tqxDefaultReport_1.Trade_From_Deed_Stat)<>'N' or (tqxDefaultReport_1.Trade_From_Deed_Stat) is null) AND 
+		((tqxDefaultReport_1.Possible_Tab_4)='Yes') AND 
+		((tqxDefaultReport_1.Definite_MO_Exclusion)='No'))
+		
