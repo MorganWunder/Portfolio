@@ -1,0 +1,92 @@
+
+with Occ as (
+SELECT DISTINCT a.source_location,b.source_location_num, 
+SUM(a.sale_countd) OVER (PARTITION BY a.source_location,TO_CHAR(trans_date,'mm-yyyy')) as sale_countd, 
+SUM(a.card_countd) OVER (PARTITION BY a.source_location,TO_CHAR(trans_date,'mm-yyyy')) as card_countd, 
+SUM(a.total_amount) OVER (PARTITION BY a.source_location,TO_CHAR(trans_date,'mm-yyyy')) as total_amount, 
+SUM(b.avail_rooms) OVER (PARTITION BY a.source_location,TO_CHAR(trans_date,'mm-yyyy')) as avail_rooms,
+SUM(occupied_rooms) OVER (PARTITION BY a.source_location,TO_CHAR(trans_date,'mm-yyyy')) as occupied_rooms,
+SUM(remove_source) OVER (PARTITION BY a.source_location,TO_CHAR(trans_date,'mm-yyyy')) as remove_source, 
+TO_CHAR(trans_date,'mm-yyyy') as month_year
+
+FROM (
+    select trans_date
+    ,count(distinct sale_number) as sale_countd
+    , count(sale_number) as sale_cnt
+    , count(distinct card_number) as card_countd
+    , count(card_number) as card_cnt
+    , sum(transaction_amount) as total_amount,
+    source_location
+from SVCFPATABLEAU.ARC_TRANSACTIONS
+where transaction_type = 'Card Product Sales'
+group by TRANS_DATE, source_location
+) a
+
+LEFT JOIN (
+    select DISTINCT To_CHAR(T_DATE,'mm-yyyy') as month_year, LEVEL_3_CODE, LEVEL_3_COMMON_NAME
+    , SUM(OCCUPIED_ROOMS) as occupied_rooms,
+    SUM(CASE WHEN group_Type='House Use' THEN occupied_rooms ELSE 0 END) as remove_source
+    , MIN(AVAILABLE_ROOMS) as avail_rooms,
+    CASE WHEN level_3_code='3110' THEN 'Villas'
+    WHEN level_3_code='3210' THEN 'Smoky'
+    WHEN level_3_code='3100' THEN 'Lakes'
+    END AS source_location,
+     CASE WHEN level_3_code='3110' THEN '0'
+    WHEN level_3_code='3210' THEN '20'
+    WHEN level_3_code='3100' THEN '3'
+    END AS source_location_num
+    
+    from SVCACTTABLEAU.OCC_MEGA
+    --WHERe RESORT NOT IN (0,9)
+    WHERE LEVEL_3_CODE in ('3110','3210','3100')
+    --AND group_type <> 'House Use'
+    group by T_DATE, LEVEL_3_CODE, LEVEL_3_COMMON_NAME
+    ORDER BY month_year
+    ) b
+    
+ON TO_CHAR(trans_date,'mm-yyyy') = month_year AND a.source_location=b.source_location
+
+),
+
+main_detail as (
+
+SELECT DISTINCT month_year, loc_code, COUNT(unit_id) OVER (Partition by month_year,loc_code) as rem_main_rooms
+
+FROM (
+SELECT "RESORT_BUSINESS_ENTITY" as loc_code, "RES_BLDG_UNIT" as unit_id, "START_DATE" as start_date, "DateRange" as single_dt, TO_CHAR("DateRange",'mm-yyyy') as month_year
+
+FROM OUTOFORDER
+
+ORDER BY start_date,res_bldg_unit,resort_business_entity
+
+)
+WHERE LOC_code IN ('0','3','20')
+--GROUP BY month_year,loc_code
+ORDER BY month_year
+
+
+)
+
+
+SELECT DISTINCT source_location,
+source_location_num,
+o.month_year,
+sale_countd,
+card_countd,
+total_amount,
+avail_rooms,
+occupied_rooms,
+remove_source,
+CASE WHEN rem_main_rooms IS NULL THEN 0 ELSE rem_main_rooms END as remove_maint
+
+FROM occ o
+LEFT JOIN main_detail m ON o.month_year=m.month_year AND o.source_location_num=m.loc_code
+
+--GROUP BY single_dt,loc_code
+ORDER BY o.month_year
+
+;
+
+SELECT *
+
+FROM SVCACTTABLEAU.res_data_daily

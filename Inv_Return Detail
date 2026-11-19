@@ -1,0 +1,153 @@
+/* Creating a query to track returned inventory in a given time period. 
+*/
+
+
+with reformat as (
+--removed columns that aren't used, changed data types, and added the inv_id + time_id column. 
+SELECT 
+i.ACCT_NO,
+TRIM(' ' FROM AS_STATUS) as AS_STATUS,
+BEDROOM,
+REGEXP_REPLACE(BLDG,'\s+','') as BLDG,
+i.CO_DATE,
+i.COD,
+DOLLARS,
+i.INTERVAL,
+REGEXP_REPLACE(LOC_CODE,'\s+','') as Loc_code, --number
+LOC_CODE2, --name 
+TO_DATE(PERIOD,'YYYY-MM') as PERIOD,
+TO_DATE(TO_CHAR(ADD_MONTHS(TO_DATE(PERIOD, 'YYYY-MM'), -1), 'YYYY-MM'), 'YYYY-MM') AS PREV_PERIOD,
+SEASON,
+i.STATUS, 
+TRIM(' ' FROM SUB_UNIT) as SUB_UNIT,
+TIME_FLG,
+i.UNIT,
+i.week,
+REGEXP_REPLACE(to_char(loc_code)||'-'||bldg||'-'||Unit||sub_unit||to_char(week)||time_flg,'\s+','') as inven_id,
+REGEXP_REPLACE(PERIOD||'-'||to_char(loc_code)||'-'||bldg||'-'||Unit||TRIM(' ' FROM sub_unit)||to_char(week)||time_flg,'\s+','') as time_id
+
+
+FROM INV_MTH1_HIST i
+
+
+--Current and previous 2 years 
+WHERE TO_NUMBER(SUBSTR(period, 1, 4)) IN (TO_CHAR(SYSDATE, 'YYYY'), TO_CHAR(ADD_MONTHS(SYSDATE, -12), 'YYYY'),TO_CHAR(ADD_MONTHS(SYSDATE, -24), 'YYYY'))
+),
+
+--self join onto the reformatted table to attach the previous month.  
+previousjoin as (
+SELECT 
+  r.*,
+  r2.PERIOD AS PM,
+  r2.ACCT_NO AS PM_ACCT_NO,
+  r2.AS_STATUS AS PM_AS_STATUS,
+  r2.cod as PM_cod,
+  r2.INVEN_ID AS PM_INVEN_ID,
+  r2.TIME_ID AS PM_TIME_ID,
+  CASE WHEN r.ACCT_NO = r2.ACCT_NO THEN 0 
+  WHEN r.ACCT_NO IS null and r2.Acct_no is NULL THEN 0 ELSE 1 END AS DIFF_ACCT,
+  CASE WHEN r.AS_STATUS = r2.AS_STATUS THEN 0 ELSE 1 END AS DIFF_AS,
+  CASE WHEN r.cod=r2.cod THEN 0 ELSE 1 END AS DIFF_cod
+FROM reformat r
+INNER JOIN (
+  -- Subquery to shift data to the previous period
+  SELECT 
+    r.*,
+    REGEXP_REPLACE(PREV_PERIOD || '-' || TO_CHAR(LOC_CODE) || '-' || BLDG || '-' || UNIT || SUB_UNIT || TO_CHAR(WEEK) || TIME_FLG,'\s+','') AS PM_TIME_ID
+  FROM reformat r
+) r2 
+ON r.INVEN_ID = r2.INVEN_ID 
+   AND r.PREV_PERIOD = r2.PERIOD
+WHERE r.LOC_CODE = '20' -- right now this is just for Loc 20
+
+),
+
+get_detail as(
+
+select MORT.MRMASTERP.ACCT_NO,
+	MORT.MRMASTERP.STATUS,
+	MORT.MRMASTERP.DETAIL,
+	MORT.MRMASTERP.STATUS_DATE,
+	MORT.MRMASTERP.DETAIL_DATE 
+from MORT.MRMASTERP
+where mort.mrmasterp.acct_no IN ( SELECT PM_acct_no FROM previousjoin)
+
+), 
+
+s_r_c as (
+SELECT p.*,
+CASE WHEN DIFF_ACCT+DIFF_AS+DIFF_COD=0 THEN 0 ELSE 1 END as DIFF_ANY,
+--Checking for sales
+CASE WHEN DIFF_AS=1 AND as_status='Sold' THEN 1 
+WHEN DIFF_acct=1 and as_status='Sold' THEN 1
+ELSE 0 END as sale,
+
+--Checking for return
+CASE WHEN DIFF_AS=1 and AS_STATUS= 'Avail' THEN 1 
+WHEN DIFF_ACCT=1 and (as_status='Sold' AND PM_AS_Status='Sold') THEN 1 
+ELSE 0 END as return,
+
+--CO changes
+CASE WHEN DIFF_cod=1 AND PM_AS_Status='Avail' THEN 1 ELSE 0 END as CO_change
+
+
+FROM previousjoin p
+
+WHERE AS_status='Avail' OR DIFF_acct+DIFF_AS+DIFF_COD>0
+
+ORDER BY Period, inven_id
+),
+
+
+search as (
+-- return table to get major and minor types. 
+SELECT b.*,
+CASE 
+    WHEN returntype2 IN ('Other', 'Deed (Other)') THEN 'Unknown'
+    WHEN returntype1 IN ('Other', 'NonDeed Default') THEN 'Default'
+    ELSE returntype2 
+END AS returnmajor,
+
+CASE 
+    WHEN returntype2 = 'Cancel' THEN returntype1
+    WHEN returntype2 = 'Trade' AND (status = 'C' OR detail = 'C') THEN 'Cashout Type' 
+    WHEN returntype2 = 'Trade' THEN returntype1
+    WHEN returntype2 IN ('Other', 'Deed (Other)') THEN 'Unknown' 
+    ELSE returntype2 
+END AS returnminor
+
+FROM (
+    -- Inner query to get returntype2
+    SELECT a.*,
+    CASE 
+        WHEN returntype1 = 'Other' AND status IN ('C','R')  THEN 'Fcl M''&''T' 
+        WHEN returntype1='Other' AND detail IN ('LM') THEN 'Fcl M''&''T'
+        WHEN returntype1 = 'Other' AND detail IN ('F', 'FM', 'L', 'WD', 'B', 'D') THEN 'Fcl Mortgage'
+        WHEN returntype1 = 'Other' AND detail IN ('Q', 'QM', 'DIL') THEN 'Deed (Other)'
+        WHEN returntype1 IN ('Resc', 'Pender Cxl', 'BT/MO') THEN 'Cancel'
+        ELSE returntype1 
+    END AS returntype2
+
+    FROM (
+        -- Inner query to get returntype1
+        SELECT s.*,
+        CASE 
+            WHEN status = 'T' OR detail = 'T' THEN 'Trade'
+            WHEN detail IN ('BT', 'MO') THEN 'BT/MO'
+            WHEN detail IN ('R', 'RD', 'RE', 'RU', 'WR', 'RP') THEN 'Resc'
+            WHEN detail = 'PD' THEN 'NonDeed Default'
+            WHEN detail = 'P' THEN 'Pender Cxl'
+            ELSE 'Other' 
+        END AS returntype1
+        
+        FROM get_detail s 
+    ) a
+) b
+)
+
+SELECT *
+
+FROM search s
+JOIN s_r_c sr ON sr.pm_acct_no=s.acct_no
+
+WHERE return=1

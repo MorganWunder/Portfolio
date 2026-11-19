@@ -1,0 +1,434 @@
+WITH 
+/*
+YTD AS (
+-- Subqury to get the cal_ytd calculation 
+  SELECT dt, ref_date, 
+    CASE WHEN dt > ref_date THEN 0 ELSE 1 END AS CAL_YTD
+  FROM (
+    SELECT DT, DT_YEAR,
+        CASE WHEN EXTRACT(YEAR FROM DT) = EXTRACT(YEAR FROM sysdate) THEN MAX(dt) OVER()
+        WHEN EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM sysdate) - 1 THEN MAX(DT) OVER() - INTERVAL '365' DAY(3)
+        ELSE MAX(DT) OVER() - INTERVAL '731' DAY(4)
+        END AS ref_date
+    FROM FPA_WEEKLY_NETSALES 
+    GROUP BY DT, DT_year
+  ) b
+  WHERE DT_year >= EXTRACT(YEAR FROM sysdate) - 1
+  
+  ORDER BY dt desc
+),*/
+                                                                            -- See if the new date ranges work 
+date_ranges as(
+
+--WTD Date Range
+SELECT 
+'WTD' as timeperiod,
+CAST(DT_Year as VARCHAR(10)) as Year, --This has to stay dt year because a week can move across years 
+MIN(DT) as mind,
+MAX(DT) as maxd
+ 
+FROM FPA_WEEKLY_SALES
+ 
+WHERE DT_WEEK_ISO=CASE  -- If it's the first week of the year look at the max week of the previous year (should be the prior week) 
+        WHEN TO_CHAR(SYSDATE, 'IW') = '01' THEN (
+        SELECT MAX(DT_WEEK_ISO)
+        FROM FPA_WEEKLY_SALES
+        WHERE DT_YEAR = EXTRACT(YEAR FROM SYSDATE) - 1
+    )
+    ELSE TO_CHAR(SYSDATE, 'IW') - 1
+END -- This is going to be an issue at the year change 
+AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM sysdate) - 2
+and DT_YEAR >= EXTRACT(YEAR FROM sysdate) - 1
+ 
+GROUP BY DT_year
+
+UNION 
+
+--MTD Date range
+SELECT DISTINCT 
+'MTD' as timeperiod,
+CAST(cal_year as varchar(10)) as year,
+MIN(s.dt)as mind,
+MAX(s.dt) as maxd
+
+FROM fpa_weekly_sales s
+--LEFT JOIN ytd on ytd.dt= s.dt
+
+WHERE EXTRACT(MONTH from s.dt)= EXTRACT(Month FROM sysdate-9) --If it's currently the first week of a new month, look at the previous month and not the current. 
+AND cal_year >= EXTRACT(YEAR FROM sysdate) - 1
+AND CAL_YTD=1
+
+group by cal_year
+
+UNION
+--YTD date ranges
+SELECT 
+'YTD' as timeperiod,
+CAST(cal_year as VARCHAR(10)) as year, 
+MIN(s.dt)as mind,
+MAX(s.dt) as maxd
+
+FROM fpa_weekly_sales s
+--LEFT JOIN ytd on ytd.dt=s.dt
+
+WHERE CAL_YTD=1
+AND (
+    (TO_CHAR(SYSDATE, 'IW') = '01' AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM SYSDATE) - 2) -- If it's the first week of the year, bring in the previous 2 years 
+    OR
+    (TO_CHAR(SYSDATE, 'IW') > '01' AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM SYSDATE) - 1) -- Anything beyond the first week of the year bring in current and previous year 
+    ) 
+GROUP BY cal_year
+
+UNION 
+--Trailing 12 months
+
+SELECT 
+'T12' as timeperiod,
+MAX(DT_year)-1||'_'||MAX(DT_YEAR) as year,
+MIN(dt) as mind,
+MAX(dt) as maxd
+
+FROM FPA_WEEKLY_SALES
+
+WHERE DT>= ADD_MONTHS(trunc(sysdate,'MM'),-12) AND DT< trunc(sysdate,'MM')
+
+UNION 
+--Previous trailing 12
+
+SELECT 'T12' as timeperiod,
+MAX(DT_year)-1||'_'||MAX(DT_YEAR) as year,
+MIN(dt) as mind,
+MAX(dt) as maxd
+
+FROM FPA_WEEKLY_SALES
+
+WHERE DT>= ADD_MONTHS(trunc(sysdate,'MM'),-24) AND DT< ADD_MONTHS(trunc(sysdate,'MM'),-12)
+),
+
+allresort as (
+
+--WTD                                               
+SELECT DISTINCT
+'WTD' as TimePeriod,
+CAST(VP AS VARCHAR2(50)) as VP_GROUP,
+RESORT_NAME, 
+DT_WEEK_ISO as week_month, 
+CAST (DT_YEAR as VARCHAR(10)) as DT_YEAR, 
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges,
+SUM(Tours) OVER (PARTITION BY DT_YEAR,cso,line) as Tours,
+SUM(new_Tours) OVER (PARTITION BY DT_YEAR,cso,line) as new_Tours,
+SUM(trade_Tours) OVER (PARTITION BY DT_YEAR,cso,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by DT_YEAR,cso,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by DT_YEAR,cso,line) as Contracts_MR, 
+SUM(Sales_volume) OVER (Partition by DT_YEAR,cso,line) as sales_volume,
+SUM(net_sales) OVER (Partition by DT_YEAR,cso,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by DT_YEAR,cso,line) as pender_sales,
+NULL as FICO_NUMERATOR,
+NULL as FICO_DENOMINATOR
+
+FROm fpa_weekly_sales I
+ LEFT JOIN date_ranges d ON I.DT_YEAR=d.year AND timeperiod='WTD'
+
+WHERE dt between d.mind and d.maxd  
+
+
+
+/*DT_WEEK_ISO=CASE  -- If it's the first week of the year look at the max week of the previous year (should be the prior week) 
+        WHEN TO_CHAR(SYSDATE, 'IW') = '01' THEN (
+        SELECT MAX(DT_WEEK_ISO)
+        FROM FPA_WEEKLY_SALES
+        WHERE DT_YEAR = EXTRACT(YEAR FROM SYSDATE) - 1
+    )
+    ELSE TO_CHAR(SYSDATE, 'IW') - 1
+END -- This is going to be an issue at the year change 
+AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM sysdate) - 2
+and DT_YEAR >= EXTRACT(YEAR FROM sysdate) - 1
+*/
+
+UNION
+
+--WTD Whole Company
+SELECT DISTINCT
+'WTD' as TimePeriod,
+'All' as VP_GROUP,
+'All' as RESORT_NAME, 
+DT_WEEK_ISO as week_month, 
+CAST (DT_YEAR as VARCHAR(10)) as DT_YEAR, 
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN Tours  ELSE 0 END) OVER (PARTITION BY DT_YEAR,line) as Tours,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN new_Tours  ELSE 0 END) OVER (PARTITION BY DT_YEAR,line) as new_Tours,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN trade_Tours  ELSE 0 END) OVER (PARTITION BY DT_YEAR,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by DT_YEAR,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by DT_YEAR,line) as Contracts_MR,
+SUM(Sales_volume) OVER (Partition by DT_year,line) as sales_volume,
+SUM(net_sales) OVER (Partition by DT_YEAR,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by DT_YEAR,line) as pender_sales,
+NULL as FICO_NUMERATOR,
+NULL as FICO_DENOMINATOR
+
+FROm fpa_weekly_sales I
+ LEFT JOIN date_ranges d ON I.DT_YEAR=d.year AND timeperiod='WTD'
+ 
+WHERE dt between d.mind and d.maxd  
+
+
+
+/*DT_WEEK_ISO=CASE  -- If it's the first week of the year look at the max week of the previous year (should be the prior week) 
+        WHEN TO_CHAR(SYSDATE, 'IW') = '01' THEN (
+        SELECT MAX(DT_WEEK_ISO)
+        FROM SALES_YTD_ISOWEEK
+        WHERE DT_YEAR = EXTRACT(YEAR FROM SYSDATE) - 1
+    )
+    ELSE TO_CHAR(SYSDATE, 'IW') - 1
+END -- This is going to be an issue at the year change 
+AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM sysdate) - 2
+and DT_YEAR >= EXTRACT(YEAR FROM sysdate) - 1
+*/
+
+
+UNION 
+
+--MTD 
+SELECT DISTINCT 
+'MTD' as TimePeriod,
+CAST(VP AS VARCHAR2(50)) as VP_GROUP,
+/*CASE WHEN I.CSO=71 THEN 'Telesales Virtual Preview' 
+    WHEN I.CSO=34 OR I.CSO=36 THEN 'Branson Combined' ELSE CAST(I.resort_name as VARCHAR(50)) END as */RESORT_NAME, 
+EXTRACT (month from dt) as week_month, 
+CAST (d.year as VARCHAR(10)) as DT_YEAR, 
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges, 
+SUM(Tours) OVER (Partition by EXTRACT(year from dt),cso,line) as Tours, 
+SUM(new_Tours) OVER (PARTITION BY EXTRACT(year from dt),cso,line) as new_Tours,
+SUM(trade_Tours) OVER (PARTITION BY EXTRACT(year from dt),cso,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by EXTRACT(year from dt),cso,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by EXTRACT(year from dt),cso,line) as Contracts_MR,
+SUM(Sales_volume) OVER (Partition by extract(year from dt),cso,line) as sales_volume,
+SUM(net_sales) OVER (Partition by EXTRACT(year from dt),cso,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by EXTRACT(year from dt),cso,line) as pender_sales,
+SUM(FICO_NUMERATOR) OVER (Partition by EXTRACT(year from dt),cso,line) as FICO_NUMERATOR,
+SUM(FICO_DENOMINATOR) OVER (Partition by EXTRACT(year from dt),cso,line) as FICO_DENOMINATOR
+
+
+FROM fpa_weekly_sales I
+ INNER JOIN date_ranges d ON EXTRACT(year from i.dt)=d.year AND timeperiod='MTD'
+ 
+WHERE dt between mind and maxd
+
+
+/*EXTRACT (month from dt)= EXTRACT(Month FROM sysdate-7) --If it's currently the first week of a new month, look at the previous month and not the current. 
+AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM sysdate) - 2
+--AND CAL_YTD=1
+*/
+UNION
+
+--MTD Whole Company
+SELECT DISTINCT
+'MTD' as TimePeriod,
+'All' as VP_GROUP,
+'All' as RESORT_NAME, 
+EXTRACT (month from dt) week_month, 
+CAST (cal_year as VARCHAR(10)) as DT_YEAR,
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN Tours ELSE 0 END) OVER (PARTITION BY cal_year,line)  as Tours,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN new_Tours ELSE 0 END) OVER (PARTITION BY cal_year,line)  as new_Tours,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN trade_Tours ELSE 0 END) OVER (PARTITION BY cal_year,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by cal_year,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by cal_year,line) as Contracts_MR,
+SUM(Sales_volume) OVER (Partition by cal_year,line) as sales_volume,
+SUM(net_sales) OVER (Partition by cal_year,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by cal_year,line) as pender_sales,
+SUM(FICO_NUMERATOR) OVER (Partition by cal_year,line) as FICO_NUMERATOR,
+SUM(FICO_DENOMINATOR) OVER (Partition by cal_year,line) as FICO_DENOMINATOR
+
+FROM fpa_weekly_sales I
+ INNER JOIN date_ranges d ON cal_year=d.year AND timeperiod='MTD'
+
+  
+WHERE dt between mind and maxd 
+
+  
+  /*EXTRACT (month from dt)= EXTRACT(Month FROM sysdate-7) --If it's currently the first week of a new month, look at the previous month and not the current. 
+AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM sysdate) - 2
+*/
+
+
+UNION
+
+--YTD 
+SELECT DISTINCT 
+'YTD' as TimePeriod,
+CAST(VP AS VARCHAR2(50)) as VP_GROUP,
+/*CASE WHEN I.CSO=71 THEN 'Telesales Virtual Preview' 
+    WHEN I.CSO=34 OR I.CSO=36 THEN 'Branson Combined' ELSE CAST(I.resort_name as VARCHAR(50)) END as */RESORT_NAME, 
+NULL as week_month, 
+CAST (cal_year as VARCHAR(10)) as DT_YEAR, 
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges, 
+SUM(Tours) OVER (Partition by cal_year,cso,line) as Tours, 
+SUM(new_Tours) OVER (PARTITION BY cal_year,cso,line) as new_Tours,
+SUM(trade_Tours) OVER (PARTITION BY cal_year,cso,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by cal_year,cso,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by cal_year,cso,line) as Contracts_MR,
+SUM(Sales_volume) OVER (Partition by cal_year,cso,line) as sales_volume,
+SUM(net_sales) OVER (Partition by cal_year,cso,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by cal_year,cso,line) as pender_sales,
+SUM(FICO_NUMERATOR) OVER (Partition by cal_year,cso,line) as FICO_NUMERATOR,
+SUM(FICO_DENOMINATOR) OVER (Partition by cal_year,cso,line) as FICO_DENOMINATOR
+
+
+FROM fpa_weekly_sales I
+LEFT JOIN date_ranges d ON cal_year=d.year AND timeperiod='YTD'
+  
+WHERE dt between mind and maxd 
+
+
+/*CAL_YTD=1
+AND (
+    (TO_CHAR(SYSDATE, 'IW') = '01' AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM SYSDATE) - 2) -- If it's the first week of the year, bring in the previous 2 years 
+    OR
+    (TO_CHAR(SYSDATE, 'IW') > '01' AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM SYSDATE) - 1) -- Anything beyond the first week of the year bring in current and previous year 
+    )*/
+
+UNION
+
+--YTD Whole Company
+SELECT DISTINCT
+'YTD' as TimePeriod,
+'All' as VP_GROUP,
+'All' as RESORT_NAME, 
+NULL as week_month, 
+CAST (cal_year as VARCHAR(10)) as DT_YEAR, 
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN Tours ELSE 0 END) OVER (PARTITION BY cal_year,line)  as Tours,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN new_Tours ELSE 0 END) OVER (PARTITION BY cal_year,line)  as new_Tours,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN trade_Tours ELSE 0 END) OVER (PARTITION BY cal_year,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by cal_year,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by cal_year,line) as Contracts_MR,
+SUM(Sales_volume) OVER (Partition by cal_year,line) as sales_volume,
+SUM(net_sales) OVER (Partition by cal_year,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by cal_year,line) as pender_sales,
+SUM(FICO_NUMERATOR) OVER (Partition by cal_year,line) as FICO_NUMERATOR,
+SUM(FICO_DENOMINATOR) OVER (Partition by cal_year,line) as FICO_DENOMINATOR
+
+FROM fpa_weekly_sales I
+ LEFT JOIN date_ranges d ON cal_year=d.year AND timeperiod='YTD'
+  
+WHERE dt between mind and maxd
+
+/*CAL_YTD=1
+AND (
+    (TO_CHAR(SYSDATE, 'IW') = '01' AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM SYSDATE) - 2) -- If it's the first week of the year, bring in the previous 2 years 
+    OR
+    (TO_CHAR(SYSDATE, 'IW') > '01' AND EXTRACT(YEAR FROM DT) >= EXTRACT(YEAR FROM SYSDATE) - 1) -- Anything beyond the first week of the year bring in current and previous year 
+    )*/
+
+
+UNION
+
+--Trailing 12 
+
+SELECT DISTINCT 
+'T12' as TimePeriod,
+CAST(VP AS VARCHAR2(50)) as VP_GROUP,
+CASE WHEN I.CSO=71 THEN 'Telesales Virtual Preview' 
+    WHEN I.CSO=34 OR I.CSO=36 THEN 'Branson Combined' ELSE CAST(I.resort_name as VARCHAR(50)) END as RESORT_NAME, 
+NULL as week_month, 
+d.YEAR as DT_year, 
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges, 
+SUM(Tours) OVER (Partition by year,cso,line) as Tours, 
+SUM(new_Tours) OVER (PARTITION BY YEAR,cso,line) as new_Tours,
+SUM(trade_Tours) OVER (PARTITION BY YEAR,cso,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by YEAR, cso,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by YEAR,cso,line) as Contracts_MR,
+SUM(Sales_volume) OVER (Partition by YEAR,cso,line) as sales_volume,
+SUM(net_sales) OVER (Partition by YEAR,cso,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by YEAR,cso,line) as pender_sales,
+SUM(FICO_NUMERATOR) OVER (Partition by YEAR,cso,line) as FICO_NUMERATOR,
+SUM(FICO_DENOMINATOR) OVER (Partition by YEAR,cso,line) as FICO_DENOMINATOR
+
+
+FROM FPA_WEEKLY_SALES I
+INNER JOIN date_ranges d ON (timeperiod='T12'
+    AND I.DT BETWEEN d.mind and d.maxd)
+
+WHERE I.CSO <> '17'
+  
+UNION
+--Trailing 12 Whole Company 
+
+SELECT DISTINCT 
+'T12' as TimePeriod,
+'All' as VP_GROUP,
+'All' as RESORT_NAME, 
+NULL as week_month, 
+d.YEAR as DT_year, 
+MAX(DT) OVER() as refresh_date,
+line,
+to_char(mind,'mm/dd/yyyy') ||' - '|| to_char(maxd,'mm/dd/yyyy') as date_ranges, 
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN Tours  ELSE 0 END) OVER (Partition by year,line) as Tours, 
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN new_Tours ELSE 0 END) OVER (PARTITION BY YEAR,line) as new_Tours,
+SUM(CASE WHEN resort_name NOT IN ('Carriage LV','SouthCenter','Vancouver') THEN trade_Tours ELSE 0 END) OVER (PARTITION BY YEAR,line) as trade_Tours,
+SUM(Contracts) OVER (Partition by YEAR,line) as Contracts,
+SUM(CASE WHEN tours=0 THEN 0
+ELSE Contracts END) OVER (Partition by YEAR,line) as Contracts_MR,
+SUM(Sales_volume) OVER (Partition by YEAR,line) as sales_volume,
+SUM(net_sales) OVER (Partition by YEAR,line) as net_sales,
+SUM(Pender_sales) OVER (Partition by YEAR,line) as pender_sales,
+SUM(FICO_NUMERATOR) OVER (Partition by YEAR,line) as FICO_NUMERATOR,
+SUM(FICO_DENOMINATOR) OVER (Partition by YEAR,line) as FICO_DENOMINATOR
+
+
+FROM FPA_WEEKLY_SALES I
+INNER JOIN date_ranges d ON (timeperiod='T12'
+    AND I.DT BETWEEN d.mind and d.maxd)
+
+
+WHERE I.CSO <> '17'
+  
+ORDER BY timeperiod, VP_GROUP, RESORT_NAME
+
+
+)
+
+SELECT timeperiod,
+vp_group,
+resort_name,
+week_month,
+dt_year,
+refresh_date,
+line,
+date_ranges,
+CASE WHEN resort_name IN ('Carriage LV','SouthCenter','Vancouver') THEN 0 ELSE tours END as tours,
+CASE WHEN resort_name IN ('Carriage LV','SouthCenter','Vancouver') THEN 0 ELSE new_tours END as new_tours,
+CASE WHEN resort_name IN ('Carriage LV','SouthCenter','Vancouver') THEN 0 ELSE trade_tours END as trade_tours,
+contracts,
+contracts_MR,
+SALES_VOLUME,
+net_sales,
+pender_sales,
+FICO_numerator,
+FICO_denominator
+
+FROM allresort
+
+;

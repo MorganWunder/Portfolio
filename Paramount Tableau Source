@@ -1,0 +1,177 @@
+--Query used in Tableau to show full pipeline and history 
+
+with base as (
+Select pts.*, to_char(sales_effort_date,'mm-yyyy') as tour_my, --Month and year of the sales effort date
+to_char(add_months(sysdate,-1),'mm-yyyy') as Previous_my, --rolling month year for the current time period we're looking at 
+to_char(sysdate,'mm-yyyy') as current_my,
+TO_CHAR(contr_date,'mm-yyyy') as contr_my, --month year of contract date 
+TRUNC(add_months(sysdate,-1),'MM') as reporting_start, --rolling beginning of the reporting period
+TRUNC(ADD_MONTHS(SYSDATE, -1), 'MM') + INTERVAL '1' MONTH - INTERVAL '1' DAY as reporting_end, --Last day of the previous month 
+TRUNC(sysdate,'MM') as next_reporting_start, --rolling beginning of the reporting period
+TRUNC(sysdate, 'MM') + INTERVAL '1' MONTH - INTERVAL '1' DAY as next_reporting_end, --Last day of the previous month 
+TRUNC(sysdate,'mm')+14 as status_cutoff, --rolling end of the status end period 
+TRUNC(add_months(sysdate,-1),'mm')+14 as previous_period_cutoff
+
+FROM paramount_tosales pts
+),
+
+status_hist as (
+
+SELECT acct_no, status,detail,type_code, mod_dt
+
+FROM (
+    SELECT sh.*, row_number() OVER (partition by sh.acct_no, trunc(sh.mod_dt)ORDER BY sh.mod_dt desc,status_seq desc) as daily_type_rank
+        FROM status_detail_hist sh
+        LEFT JOIN mrcontp mr ON sh.acct_no=mr.acct_no
+        WHERE mr.mkt_src='5120800'
+        )a 
+        
+    
+WHERE daily_type_rank=1
+
+
+),
+
+first_pender_date as (
+
+SELECT acct_no,status,detail,type_code,TRUNC(mod_dt) as first_pender_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt asc) as first_pender_type
+
+    FROM status_hist sh
+
+    WHERE type_code='P' )a
+    
+where first_pender_type=1
+ORDER BY acct_no,mod_dt
+
+),
+
+first_good_date as ( 
+
+SELECT acct_no,status,detail,type_code,TRUNC(mod_dt) as first_good_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt asc) as first_good_type
+
+    FROM status_hist sh
+
+    WHERE type_code='G' )a
+    
+where first_good_type=1
+ORDER BY acct_no,mod_dt
+
+),
+
+last_good_date as (
+SELECT acct_no,status,detail,type_code,TRUNC(mod_dt) as last_good_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt desc) as last_good_type
+
+    FROM status_hist sh
+
+    WHERE type_code='G' 
+    )a
+    
+where last_good_type=1
+ORDER BY acct_no,mod_dt
+),
+
+last_pender_date as (
+
+SELECT acct_no,status,detail,type_code,mod_dt as last_pender_date
+
+FROM (SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt desc) as last_pender_type
+
+    FROM status_hist sh
+
+    WHERE type_code='P' )a
+    
+where last_pender_type=1
+ORDER BY acct_no,mod_dt
+),
+
+first_res_date as(
+
+SELECT acct_no,status,detail,type_code,TRUNC(mod_dt) as first_res_date
+
+FROM (
+    SELECT sh.*, RANK() OVER (partition by acct_no ORDER BY mod_dt asc) as first_res
+    FROM status_hist sh
+    
+    WHERE status IN ('X') OR detail='WR'
+    )a
+WHERE first_res=1
+
+),
+
+
+payout_rules as (
+-- good biz date= min type date where type is good
+-- in good biz calc = if good biz date is between the first of the reporting month and the 15th of the following. 
+SELECT b.*, first_good_date,first_res_date,last_good_date, first_pender_date, add_months(status_cutoff,+1) as next_status_cutoff,
+--in current month reporting
+
+CASE WHEN first_good_date is not null and first_pender_date<first_good_date THEN 'PtoG'
+ELSE null END as Pender_to_good, 
+
+CASE WHEN tour_MY=previous_my and sales_effort_status='COMPLETED' Then 'yes as tour' 
+       WHEN tour_my=current_my AND sales_effort_status='COMPLETED' THEN 'yes as tour'  ELSE null 
+       END as tour_report,
+
+tour_MY as tour_report_date, 
+
+CASE WHEN tour_My<previous_my --when the tour happens in the months before the reporting period 
+    AND first_good_date=last_good_date AND 
+       first_good_date between previous_period_cutoff AND status_cutoff 
+       AND b.type_code='G'--has to be within this reporting period
+    then 'yes as good'
+    ------------------ ^Did a tour from previous months have a contract that went good in this current reporting period? 
+    WHEN tour_My<previous_my AND first_good_date>previous_period_cutoff AND last_good_date between previous_period_cutoff AND status_cutoff and b.type_code='G' THEN 'yes as good' 
+    ------------------ ^Did a tour in previous months have a contract that went good multiple times in this current reporting period? 
+    
+    WHEN tour_my=previous_my --if the contract happened in this reporting period
+    AND last_good_date BETWEEN reporting_start and status_cutoff 
+    AND b.type_code='G' THEN 'yes as good'
+    ----------------- ^ Did a tour that happened in the previous month have a contract that went good in this reporting period? 
+    WHEN tour_my=previous_my
+    AND last_good_date > status_cutoff 
+    AND b.type_code='G' THEN 'yes as good' 
+    ---------------- ^ Did a tour from the previous month turn good in the next reporting period 
+    WHEN tour_my=current_my 
+    AND last_good_date BETWEEN Next_reporting_start and add_months(status_cutoff,+1) 
+    AND b.type_code='G' THEN 'yes as good'
+    ----------------^ Did a tour in the current month have a contract go good in the upcoming reporting period? 
+    WHEN good_biz_calc_date is not null then 'yes as good' -- To catch priot months contracts that were counted as good business previously 
+    ELSE null END as contr_report,
+
+CASE WHEN to_char(first_good_date,'mm-yyyy')=tour_my AND b.type_code='G' THEN tour_my
+WHEN first_good_date is not null AND b.type_code='G' AND EXTRACT(day from first_good_date)<=15 then to_char(add_months(first_good_date,-1),'mm-yyyy') 
+WHEN first_good_date is not null AND b.type_code='G' AND EXTRACT(day from first_good_date)>15 then to_char(first_good_date,'mm-yyyy') 
+ELSE null END as good_biz_date, 
+    
+
+good_biz_calc_date,
+
+CASE WHEN first_res_date between reporting_start and status_cutoff THEN 'Remove as Rescind' ELSE null END as Rescind_report
+
+
+From base b
+LEFT JOIN first_good_date fgd ON fgd.acct_no=b.acct_no
+LEFT JOIN first_res_date frd ON frd.acct_no=b.acct_no
+LEFT JOIN last_good_date lgd ON lgd.acct_no=b.acct_no
+LEFT JOIN last_pender_date lpd ON lpd.acct_no=b.acct_no
+LEFT JOIN first_pender_date fpd ON fpd.acct_no=b.acct_no
+LEFT JOIN paramount_goodhist gh ON gh.acct_no=b.acct_no
+
+
+ORDER by sales_effort_date desc
+
+)
+
+
+SELECT pr.*, 
+
+
+COALESCE(to_char(to_date(good_biz_calc_date,'yyyy-mm'),'mm-yyyy'),CASE WHEN contr_report='yes as good' THEN current_my ELSE null END) as contr_report_date 
+
+FROM payout_rules pr

@@ -1,0 +1,178 @@
+
+# Goal- Can I repeat or copy the alteryx flow that imports,cleans, and outputs the weekly Excel file we get from Paramount. 
+
+import os
+import pandas as pd
+from datetime import date
+#from sqlalchemy import create_engine
+import pyodbc
+from pathlib import Path
+
+
+password=os.getenv("SVCFPATABLEAU")
+
+
+if not password:
+        raise ValueError("Password environment variable is not set.")
+
+
+
+folder = Path(r"C:\Users\wunderm\Documents\Paramount Downloaded Attachments")
+files=list(folder.glob("*.xlsx"))
+
+if not files:
+                raise FileNotFoundError(
+                        "No Excel files found in {folder}"
+                )
+
+file_path=max(
+        files,
+        key=lambda file: file.stat().st_mtime
+)
+
+print(f"Processing:{file_path.name}")
+
+df=pd.read_excel(
+        file_path, #"data/Paramount Test File.xlsx",
+        sheet_name='LAS-Take A Break  Travel',
+        skiprows=8, 
+        #header=8 #Tells Python to start at 0 at the row you've indicated here. 
+       # usecols=["Resort","Invite","Quin #","Type","Date","Loc. No.","Score","Description","NQ Reason","Tours",
+        #        "Tour Pay","Misc Pay","Bonus","Gift CB","Total","Deposits","Net Pay","Gifts Issued"]
+
+        usecols="A:C,E,G:S,U:V"
+) #File we get sent from Planful weekly, limited to what we need. 
+
+
+#Cleaning
+
+df.columns=df.columns.str.strip() #cleans leading and trailing white spaces
+
+df=df.dropna(how="all") #Drops rows where they are all Nulls 
+
+numeric_cols= df.select_dtypes(include="number").columns
+df[numeric_cols]=df[numeric_cols].fillna(0)
+
+string_cols=df.select_dtypes(include=["object","string"]).columns
+df[string_cols]=df[string_cols].fillna("")
+
+
+# Insert Date
+df["insdate"] = date.today()
+
+
+df= df.rename(columns=
+                {"Invite":"invite_number",
+                 "Quin #" :"Quinella",
+                 "Date":"Tour_date",
+                 "Loc. No.":"Location_Number",
+                 "NQ Reason":"NQ_Reason",
+                 "Tour Pay":"Tour_Payout",
+                 "Misc Pay":"Misc_payout",
+                 "Gift CB":"Gift",
+                 "Unnamed: 16":"Transaction_amt",
+                 "Net Pay":"Net_pay",
+                 "Gifts Issued":"Gifts_issued"}) # Rename Columns here 
+
+
+#=================================================
+# After ETL, insert into table
+# ================================================ 
+
+
+#=================================================
+# Section below is to check for duplicate loads, not currently needed. 
+
+#=================================================
+# df["source_file"]=file_path.name
+
+# cursor.execute(
+#          """
+#     SELECT COUNT(*)
+#     FROM PARAMOUNT_TESTPYTHON
+#     WHERE SOURCE_FILE = ?
+#     """,
+#     file_path.name
+# )
+
+# already_loaded=cursor.fetchone()[0]
+
+# if already_loaded>0:
+#                 raise ValueError (
+#                         f"{file_path.name} has already been loaded"
+#                 )
+
+conn=pyodbc.connect(
+        "DSN=XXXXXX;"
+        "UID=XXXXXX;"
+        f"PWD={password};"
+)
+
+print("Successfully connected to Oracle")
+
+
+cursor=conn.cursor()
+
+sql= """
+INSERT INTO PARAMOUNT_TESTPYTHON (
+        RESORT
+        ,INVITE_NUMBER
+        ,TYPE
+        ,TOUR_DATE
+        ,LOCATION_NUMBER
+        ,SCORE
+        ,DESCRIPTION     
+        ,NQ_REASON
+        ,TOURS
+        ,TOUR_PAYOUT
+        ,MISC_PAYOUT
+        ,BONUS
+        ,GIFT
+        ,TRANSACTION_AMT
+        ,TOTAL
+        ,DEPOSITS
+        ,NET_PAY
+        ,GIFTS_ISSUED
+        ,INSDATE
+)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+
+"""
+data= list(
+        df[
+                [  "Resort",          
+"invite_number", 
+"Type",      
+"Tour_date",
+"Location_Number",     
+"Score",     
+"Description",    
+"NQ_Reason",         
+"Tours",      
+"Tour_Payout",      
+"Misc_payout",     
+"Bonus", 
+"Gift",     
+"Transaction_amt",      
+"Total",  
+"Deposits",      
+"Net_pay",    
+"Gifts_issued",
+ "insdate"]
+        ].itertuples(index=False,name=None)
+)
+
+cursor.executemany(sql,data)
+
+conn.commit()
+
+print(f"Successfully inserted {len(df)} rows.")
+
+cursor.close()
+
+conn.close() #Make sure the connection to Oracle closes. 
+
+#print(df.info()) 
+
+#print(df.head())
+
